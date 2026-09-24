@@ -1,0 +1,982 @@
+---
+title: "Data Exploration in R"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: '3'
+    df_print: paged
+  html_notebook:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    number_sections: true
+subtitle: Understanding Health Survey Data Before Any Analysis — with NHANES
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo       = TRUE,
+  message    = FALSE,
+  warning    = FALSE,
+  comment    = "#>",
+  fig.width  = 8,
+  fig.height = 5,
+  fig.align  = "center"
+)
+```
+
+---
+
+<div class="info">
+<strong>🔬 About this notebook</strong><br>
+Exploratory Data Analysis (EDA) is the essential first step before any statistical model or hypothesis test. This notebook teaches a <em>systematic</em> EDA workflow using the <strong>NHANES</strong> (National Health and Nutrition Examination Survey) dataset — a real, population-representative US health survey. You will learn to profile a dataset, audit its quality, understand every variable's distribution, and map relationships between clinical variables — all before touching inference.
+</div>
+
+**Learning objectives**
+
+1. Profile a new dataset systematically: dimensions, types, missingness, and cardinality  
+2. Describe and visualise univariate distributions for continuous and categorical variables  
+3. Detect and handle outliers using clinical and statistical criteria  
+4. Explore bivariate and multivariate relationships with appropriate plots  
+5. Summarise findings in a coherent EDA narrative ready to share with collaborators  
+
+**Estimated time:** ~60 minutes
+
+---
+
+# Setup & Packages 
+
+## Install & Load
+
+```{r packages}
+packages <- c("tidyverse", "NHANES", "skimr", "janitor",
+              "ggridges", "GGally", "patchwork", "corrplot",
+              "scales", "gt")
+
+new_packages <- packages[!(packages %in% installed.packages()[,"Package"])]
+
+if (length(new_packages) > 0) {
+  install.packages(new_packages)
+}
+
+lapply(packages, library, character.only = TRUE)
+
+```
+
+## A Global Plot Theme
+
+Setting a theme once keeps every figure consistent throughout the notebook.
+
+```{r theme}
+# Custom ggplot2 theme applied globally
+theme_nhanes <- function(base_size = 13) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      plot.title       = element_text(face = "bold", size = base_size + 1,
+                                      colour = "#0d2137", margin = margin(b = 6)),
+      plot.subtitle    = element_text(colour = "#546e7a", size = base_size - 1,
+                                      margin = margin(b = 10)),
+      plot.caption     = element_text(colour = "#90a4ae", size = 9),
+      axis.title       = element_text(colour = "#37474f", size = base_size - 1),
+      axis.text        = element_text(colour = "#546e7a"),
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(colour = "#eceff1"),
+      strip.text       = element_text(face = "bold", colour = "#0d2137"),
+      legend.position  = "bottom",
+      legend.title     = element_text(face = "bold", size = base_size - 1)
+    )
+}
+
+theme_set(theme_nhanes())
+
+# Colour palettes
+pal_sex     <- c(female = "#e91e8c", male = "#1565c0")
+pal_cat     <- c("#00897b","#e53935","#1565c0","#f9a825","#7b1fa2","#546e7a")
+```
+
+---
+
+# Meet the Dataset 
+
+## What is NHANES?
+
+<div class="tip">
+<strong>📋 NHANES background</strong><br>
+The National Health and Nutrition Examination Survey is conducted by the US Centers for Disease Control and Prevention (CDC). It combines interviews, physical examinations, and laboratory tests on a nationally representative sample of ~10,000 participants per survey cycle. The <code>NHANES</code> R package provides data from the <strong>2009–2012</strong> cycles (two consecutive releases pooled).
+</div>
+
+## First Contact — Load & Preview
+
+```{r load-data}
+# Load and convert to tibble for cleaner printing
+data(NHANES)
+nhanes_raw <- as_tibble(NHANES)
+
+# How big is it?
+cat("Rows:   ", nrow(nhanes_raw), "\n")
+cat("Columns:", ncol(nhanes_raw), "\n")
+```
+
+```{r glimpse}
+# glimpse() — the first command to run on any new dataset
+# Shows every column: name | type | first few values
+glimpse(nhanes_raw)
+```
+
+```{r head}
+# See the first 6 rows; slice a few interesting columns
+nhanes_raw |>
+  select(ID, SurveyYr, Gender, Age, Race1, Education,
+         BMI, BPSysAve, BPDiaAve, TotChol, Diabetes) |>
+  head(10)
+```
+
+## Variable Inventory
+
+A data dictionary is the first document to read (or build) for any clinical
+dataset.
+
+```{r data-dict}
+# Build a variable inventory programmatically
+var_inventory <- tibble(
+  variable    = names(nhanes_raw),
+  type        = map_chr(nhanes_raw, ~class(.x)[1]),
+  n_unique    = map_int(nhanes_raw, n_distinct),
+  pct_missing = map_dbl(nhanes_raw, ~mean(is.na(.x)) * 100) |> round(1)
+) |>
+  arrange(desc(pct_missing))
+
+var_inventory |>
+  gt() |>
+  tab_header(title = "NHANES Variable Inventory") |>
+  cols_label(variable = "Variable", type = "Type",
+             n_unique = "Unique values", pct_missing = "% Missing") |>
+  data_color(columns = pct_missing,
+             palette = c("white","#ffcdd2","#e53935")) |>
+  fmt_number(columns = pct_missing, decimals = 1) |>
+  tab_options(table.font.size = 12)
+```
+
+---
+
+# Build the Analytic Dataset 
+
+Rather than working with all 76 columns, we select a focused set of clinically
+meaningful variables and apply light cleaning.
+
+```{r build-analytic}
+
+nhanes <- nhanes_raw |>
+  # Deduplicate: each participant appears twice (two survey years); keep first
+  distinct(ID, .keep_all = TRUE) |>
+  select(
+    id           = ID,
+    survey_yr    = SurveyYr,
+    age          = Age,
+    sex          = Gender,
+    race         = Race1,
+    education    = Education,
+    hh_income    = HHIncome,
+    # Anthropometry
+    weight_kg    = Weight,
+    height_cm    = Height,
+    bmi          = BMI,
+       # Cardiovascular
+    sbp          = BPSysAve,
+    dbp          = BPDiaAve,
+    heart_rate   = Pulse,
+    # Metabolic
+    total_chol   = TotChol,
+    hdl          = DirectChol,
+    # Clinical outcomes
+    diabetes      = Diabetes,
+    bmi_cat       = BMI_WHO,
+    # Lifestyle
+    smoker        = SmokeNow,
+    alcohol_yr    = AlcoholYear,
+    phys_active   = PhysActive,
+    phys_days     = PhysActiveDays,
+    sleep_hrs     = SleepHrsNight,
+    # Mental health
+    depressed     = Depressed
+  ) |>
+  # Restrict to adults (≥18)
+  filter(age >= 18) |>
+  # Consistent factor levels for sex
+  mutate(
+    sex       = fct_relevel(sex, "female", "male"),
+    race      = fct_infreq(race),         # order by frequency
+    education = fct_relevel(education,
+                  "8th Grade","9 - 11th Grade","High School",
+                  "Some College","College Grad")
+  )
+
+cat("Analytic dataset:", nrow(nhanes), "adults,", ncol(nhanes), "variables\n")
+
+```
+
+---
+
+# Step 1 — Dataset Profile <span class="badge">5 min</span>
+
+<div class="explore">
+<strong>🧭 EDA rule #1:</strong> Never skip the profile step. Before plotting anything, know your dimensions, types, missing data, and the range of every variable.
+</div>
+
+## skimr::skim() — The Best One-Call Summary
+
+```{r skim}
+skim(nhanes)
+```
+
+`skim()` reports for each variable: missing count, completion rate, mean, SD,
+percentiles, and a mini histogram — all in one call.
+
+## Missing Data Audit
+
+```{r missing-summary}
+missing_tbl <- nhanes |>
+  summarise(across(everything(), ~mean(is.na(.)) * 100)) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "pct_missing") |>
+  filter(pct_missing > 0) |>
+  arrange(desc(pct_missing)) |>
+  mutate(
+    missingness = case_when(
+      pct_missing < 5  ~ "Low (<5%)",
+      pct_missing < 20 ~ "Moderate (5–20%)",
+      TRUE             ~ "High (>20%)"
+    ) |> factor(levels = c("Low (<5%)","Moderate (5–20%)","High (>20%)"))
+  )
+
+missing_tbl
+```
+
+```{r missing-plot, fig.height=6}
+ggplot(missing_tbl, aes(x = pct_missing,
+                         y = fct_reorder(variable, pct_missing),
+                         fill = missingness)) +
+  geom_col(width = .7) +
+  geom_vline(xintercept = c(5, 20), linetype = "dashed",
+             colour = "grey50", linewidth = .6) +
+  scale_fill_manual(values = c("Low (<5%)"         = "#80cbc4",
+                                "Moderate (5–20%)"  = "#f9a825",
+                                "High (>20%)"       = "#e53935")) +
+  scale_x_continuous(labels = label_percent(scale = 1)) +
+  labs(title    = "Missing Data by Variable",
+       subtitle = "Dashed lines at 5% and 20% thresholds",
+       x = "% Missing", y = NULL, fill = "Missingness level") +
+  theme(legend.position = "right")
+```
+
+```{r missing-pattern}
+# Are missingness patterns related to key variables?
+nhanes |>
+  mutate(
+    chol_missing  = is.na(total_chol),
+    bmi_missing  = is.na(bmi),
+    sleep_missing = is.na(sleep_hrs)
+  ) |>
+  summarise(
+    across(c(chol_missing, bmi_missing, sleep_missing),
+           list(n   = ~sum(.),
+                pct = ~round(mean(.) * 100, 1)))
+  )
+```
+
+<div class="warn">
+⚠️ <strong>Missing not at random (MNAR):</strong> Laboratory values (cholesterol, glucose) are often missing because participants declined the blood draw, which may correlate with health behaviour or distrust of the healthcare system. Always investigate whether missingness is related to other variables before imputing.
+</div>
+
+---
+
+# Step 2 — Univariate Analysis: Continuous Variables <span class="badge">10 min</span>
+
+<div class="explore">
+<strong>🧭 EDA rule #2:</strong> Examine each variable individually before comparing groups. Know the shape, centre, spread, and any anomalies.
+</div>
+
+## Distribution Shape — Histogram + Density
+
+```{r univar-hist-bmi}
+p_hist <- ggplot(nhanes |> drop_na(bmi), aes(x = bmi)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 50,
+                 fill = "#00897b", colour = "white", alpha = .85) +
+  geom_density(colour = "#004d40", linewidth = 1.1, adjust = 1.5) +
+  geom_vline(xintercept = c(18.5, 25, 30), linetype = "dashed",
+             colour = "#e53935", linewidth = .7) +
+  annotate("text", x = c(16.5, 21.8, 27.5, 35),
+           y = c(.055, .055, .055, .055),
+           label = c("Under-\nweight","Normal","Over-\nweight","Obese"),
+           size = 3, colour = "#e53935") +
+  labs(title    = "BMI Distribution — US Adults (NHANES 2009–2012)",
+       subtitle = "Dashed lines: WHO BMI thresholds",
+       x = "BMI (kg/m²)", y = "Density")
+
+p_hist
+```
+
+```{r univar-hist-sbp}
+p_sbp <- ggplot(nhanes |> drop_na(sbp), aes(x = sbp)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 45,
+                 fill = "#1565c0", colour = "white", alpha = .85) +
+  geom_density(colour = "#0d47a1", linewidth = 1.1) +
+  geom_vline(xintercept = c(120, 130, 140), linetype = "dashed",
+             colour = "#f9a825", linewidth = .7) +
+  annotate("text", x = c(108, 125, 135, 155), y = rep(.028, 4),
+           label = c("Normal","Elevated","Stage 1","Stage 2"),
+           size  = 2.9, colour = "#e65100") +
+  labs(title = "Systolic Blood Pressure Distribution",
+       x = "SBP (mmHg)", y = "Density")
+
+p_sbp
+```
+
+```{r univar-panel, fig.height=8}
+# Panel of all key continuous variables
+vars_cont <- nhanes |>
+  select(BMI = bmi, `SBP (mmHg)` = sbp, `DBP (mmHg)` = dbp,
+         `Total Chol (mmol/L)` = total_chol, `HDL (mmol/L)` = hdl,
+          `Sleep (hrs)` = sleep_hrs)|>
+  pivot_longer(everything(), names_to = "variable", values_to = "value") |>
+  drop_na()
+
+ggplot(vars_cont, aes(x = value)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 40,
+                 fill = "#00897b", colour = "white", alpha = .8) +
+  geom_density(colour = "#004d40", linewidth = .8) +
+  facet_wrap(~variable, scales = "free", ncol = 4) +
+  labs(title    = "Univariate Distributions — Key Clinical Variables",
+       subtitle = "Each panel uses its own scale (free axes)",
+       x = NULL, y = "Density")
+```
+
+## Summarising Shape: Skewness Diagnostics
+
+```{r skewness}
+nhanes |>
+  select(bmi, sbp, dbp, total_chol, hdl, sleep_hrs) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "value") |>
+  drop_na() |>
+  group_by(variable) |>
+  summarise(
+    n        = n(),
+    mean     = round(mean(value), 2),
+    median   = round(median(value), 2),
+    sd       = round(sd(value), 2),
+    skewness = round((mean(value) - median(value)) / sd(value) * 3, 2),
+    p05      = round(quantile(value, .05), 2),
+    p95      = round(quantile(value, .95), 2)
+  ) |>
+  mutate(shape = case_when(
+    abs(skewness) < 0.3 ~ "Approximately symmetric",
+    skewness  >  0.3    ~ "Right-skewed",
+    skewness  < -0.3    ~ "Left-skewed"
+  )) |>
+  arrange(desc(abs(skewness)))
+```
+
+## Q-Q Plots — Normality Assessment
+
+```{r qqplots, fig.height=7}
+qq_vars <- nhanes |>
+  select(BMI = bmi, `SBP` = sbp,
+         `Total Chol` = total_chol, `BMI` = bmi) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "value") |>
+  drop_na()
+
+ggplot(qq_vars, aes(sample = value)) +
+  stat_qq(alpha = .25, colour = "#1565c0", size = .7) +
+  stat_qq_line(colour = "#e53935", linewidth = .9) +
+  facet_wrap(~variable, scales = "free") +
+  labs(title    = "Q-Q Plots: Assessing Normality",
+       subtitle = "Points on the red line = normally distributed",
+       x = "Theoretical quantiles", y = "Sample quantiles")
+```
+
+## Log-Transformation for Skewed Variables
+
+```{r log-transform, fig.height=4}
+p_raw <- ggplot(nhanes |> drop_na(sbp), aes(x = sbp)) +
+  geom_histogram(bins = 60, fill = "pink", colour = "white", alpha = .85) +
+  labs(title = "SBP — raw", x = "SBP")
+
+p_log <- ggplot(nhanes |> drop_na(sbp), aes(x = log(sbp))) +
+  geom_histogram(bins = 60, fill = "#00897b", colour = "white", alpha = .85) +
+  labs(title = "SBP — log-transformed", x = "log(SBP)")
+
+p_raw + p_log
+```
+
+---
+
+# Step 3 — Univariate Analysis: Categorical Variables
+
+## Frequency Tables with janitor::tabyl()
+
+```{r tabyl-sex}
+nhanes |> tabyl(sex) |> adorn_pct_formatting(digits = 1)
+```
+
+```{r tabyl-race}
+nhanes |> tabyl(race) |>
+  adorn_pct_formatting(digits = 1) |>
+  adorn_totals()
+```
+
+```{r tabyl-diabetes}
+nhanes |> tabyl(diabetes) |>
+  adorn_pct_formatting(digits = 1) |>
+  adorn_totals()
+```
+
+## Bar Charts for Categorical Variables
+
+```{r barplot-race, fig.height=3}
+nhanes |>
+  drop_na(race) |>
+  count(race) |>
+  mutate(pct = n / sum(n) * 100,
+         race = fct_reorder(race, n)) |>
+  ggplot(aes(x = pct, y = race, fill = race)) +
+  geom_col(width = .65, show.legend = FALSE) +
+  geom_text(aes(label = sprintf("%.1f%%", pct)),
+            hjust = -.15, size = 3.5, colour = "#0d2137") +
+  scale_fill_manual(values = pal_cat) +
+  scale_x_continuous(limits = c(0, 50), labels = label_percent(scale = 1)) +
+  labs(title = "Racial/Ethnic Composition of the NHANES Sample",
+       x = "Percentage (%)", y = NULL)
+```
+
+```{r barplot-education, fig.height=4}
+nhanes |>
+  drop_na(education) |>
+  count(education) |>
+  mutate(pct = n / sum(n) * 100) |>
+  ggplot(aes(x = education, y = pct, fill = education)) +
+  geom_col(width = .65, show.legend = FALSE) +
+  geom_text(aes(label = sprintf("%.1f%%", pct)),
+            vjust = -.4, size = 3.5, colour = "#0d2137") +
+  scale_fill_manual(values = pal_cat) +
+  scale_y_continuous(labels = label_percent(scale = 1), expand = expansion(mult = c(0,.12))) +
+  labs(title = "Educational Attainment",
+       x = NULL, y = "Percentage (%)") +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1))
+```
+
+---
+
+# Step 4 — Outlier Detection <span class="badge">7 min</span>
+
+<div class="explore">
+<strong>🧭 EDA rule #3:</strong> Outliers in clinical data can be data-entry errors, physiologically implausible values, or genuinely extreme cases. <em>Never delete an outlier without first understanding why it exists.</em>
+</div>
+
+## Box Plots — Visual Outlier Detection
+
+```{r outlier-box, fig.height=5.5}
+nhanes |>
+  select(BMI = bmi, `SBP (mmHg)` = sbp, `DBP (mmHg)` = dbp,
+         `Total Chol` = total_chol, `HDL` = hdl) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "value") |>
+  drop_na() |>
+  ggplot(aes(x = variable, y = value, fill = variable)) +
+  geom_boxplot(outlier.colour = "#e53935", outlier.alpha = .5,
+               outlier.size = 1.5, show.legend = FALSE) +
+  facet_wrap(~variable, scales = "free", ncol = 3) +
+  scale_fill_manual(values = rep(pal_cat, 3)) +
+  labs(title    = "Box Plots — Outlier Screening",
+       subtitle = "Red dots = values beyond 1.5 × IQR",
+       x = NULL, y = NULL)
+```
+
+## IQR Rule — Flag Statistical Outliers
+
+```{r outlier-iqr}
+
+flag_outliers <- function(x) {
+  q1  <- quantile(x, .25, na.rm = TRUE)
+  q3  <- quantile(x, .75, na.rm = TRUE)
+  iqr <- q3 - q1
+  x < (q1 - 1.5 * iqr) | x > (q3 + 1.5 * iqr)
+}
+
+# Pre-compute n_total per variable (non-missing counts) cleanly
+n_total_df <- nhanes |>
+  select(bmi, sbp, dbp, hdl) |>
+  summarise(across(everything(), \(x) sum(!is.na(x)))) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "n_total")
+
+nhanes |>
+  select(id, bmi, sbp, dbp, hdl) |>
+  mutate(across(-id, \(x) flag_outliers(x), .names = "out_{.col}")) |>
+  summarise(across(starts_with("out_"), \(x) sum(x, na.rm = TRUE),
+                   .names = "{str_remove(.col, 'out_')}")) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "n_outliers") |>
+  left_join(n_total_df, by = "variable") |>
+  mutate(pct = round(n_outliers / n_total * 100, 1))
+
+```
+
+```{r outlier-iqr-simple}
+# Simpler: count outliers per key variable
+outlier_counts <- nhanes |>
+  select(bmi, sbp, dbp, total_chol) |>
+  summarise(across(everything(),
+                   list(n_out = ~sum(flag_outliers(.), na.rm = TRUE),
+                        n_tot = ~sum(!is.na(.))),
+                   .names = "{.col}__{.fn}")) |>
+  pivot_longer(everything()) |>
+  separate(name, into = c("variable","stat"), sep = "__") |>
+  pivot_wider(names_from = stat, values_from = value) |>
+  mutate(pct_outliers = round(n_out / n_tot * 100, 1))
+
+outlier_counts
+```
+
+## Clinical Plausibility Checks
+
+Statistical outliers are not always clinically implausible. Apply domain
+knowledge to define hard limits.
+
+```{r clinical-checks}
+# Define clinically plausible ranges
+plausibility <- nhanes |>
+  select(id, age, bmi, sbp, dbp, heart_rate, total_chol) |>
+  mutate(
+    flag_bmi  = bmi  < 10  | bmi  > 70,    # outside physiological range
+    flag_sbp  = sbp  < 60  | sbp  > 250,
+    flag_dbp  = dbp  < 30  | dbp  > 150,
+    flag_hr   = heart_rate < 30 | heart_rate > 200,
+    flag_chol = total_chol < 1.5 | total_chol > 15
+  )
+
+# How many implausible values per variable?
+plausibility |>
+  summarise(across(starts_with("flag_"), sum, na.rm = TRUE)) |>
+  pivot_longer(everything(),
+               names_to  = "variable",
+               values_to = "n_implausible",
+               names_prefix = "flag_") |>
+  arrange(desc(n_implausible))
+```
+
+## Scatter Plot with Outlier Highlight
+
+```{r outlier-scatter}
+nhanes |>
+  drop_na(bmi, sbp) |>
+  mutate(
+    sbp_out = flag_outliers(sbp),
+    bmi_out = flag_outliers(bmi),
+    is_out  = sbp_out | bmi_out
+  ) |>
+  ggplot(aes(x = bmi, y = sbp, colour = is_out)) +
+  geom_point(alpha = .3, size = .9) +
+  scale_colour_manual(values = c("FALSE" = "#b0bec5", "TRUE" = "#e53935"),
+                      labels = c("Normal", "Outlier (IQR rule)")) +
+  labs(title    = "BMI vs Systolic BP — Outliers Highlighted",
+       subtitle = "Red points exceed 1.5 × IQR in either variable",
+       x = "BMI (kg/m²)", y = "SBP (mmHg)", colour = NULL)
+```
+
+---
+
+# Step 5 — Bivariate Analysis: Continuous vs Continuous <span class="badge">8 min</span>
+
+<div class="explore">
+<strong>🧭 EDA rule #4:</strong> Always plot the relationship before computing a correlation coefficient. Anscombe's quartet proved that identical r values can describe completely different patterns.
+</div>
+
+## Scatter Plots with Smooth Trends
+
+```{r bivar-scatter-bmi-sbp}
+nhanes |>
+  drop_na(bmi, sbp, sex) |>
+  ggplot(aes(x = bmi, y = sbp, colour = sex)) +
+  geom_point(alpha = .15, size = .8) +
+  geom_smooth(method = "loess", se = TRUE, linewidth = 1.2) +
+  scale_colour_manual(values = pal_sex) +
+  facet_wrap(~sex) +
+  labs(title    = "BMI vs Systolic BP by Sex",
+       subtitle = "LOESS smooth with 95% confidence band",
+       x = "BMI (kg/m²)", y = "SBP (mmHg)", colour = "Sex")
+```
+
+```{r bivar-scatter-chol-hdl}
+nhanes |>
+  drop_na(total_chol, hdl, diabetes) |>
+  ggplot(aes(x = total_chol, y = hdl, colour = diabetes)) +
+  geom_point(alpha = .2, size = .9) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = 1.2) +
+  scale_colour_manual(values = c("No" = "#00897b","Yes" = "#e53935")) +
+  labs(title    = "Total Cholesterol vs HDL by Diabetes Status",
+       x = "Total Cholesterol (mmol/L)", y = "HDL (mmol/L)",
+       colour = "Diabetes")
+```
+
+## Correlation Matrix
+
+```{r corr-matrix, fig.height=6}
+corr_data <- nhanes |>
+  select(Age = age, BMI = bmi, SBP = sbp, DBP = dbp, `Total Chol` = total_chol,
+         HDL = hdl, `Sleep hrs` = sleep_hrs) |>
+  drop_na()
+
+corr_mat <- cor(corr_data, use = "complete.obs", method = "pearson")
+
+corrplot(
+  corr_mat,
+  method  = "color",
+  type    = "upper",
+  order   = "hclust",             # cluster correlated variables together
+  addCoef.col = "black",
+  number.cex  = .72,
+  tl.col  = "#0d2137",
+  tl.srt  = 40,
+  col     = colorRampPalette(c("#1565c0","white","#c62828"))(200),
+  title   = "Pearson Correlation Matrix — Clinical Variables",
+  mar     = c(0,0,2,0)
+)
+```
+
+## GGally::ggpairs() — Pairs Plot
+
+```{r ggpairs, fig.height=7, message=FALSE}
+nhanes |>
+  drop_na(bmi, sbp, total_chol, hdl, diabetes) |>
+  sample_n(800) |>                           # sample for speed
+  select(BMI = bmi, SBP = sbp,
+         `Total Chol` = total_chol, HDL = hdl, Diabetes = diabetes) |>
+  ggpairs(
+    aes(colour = Diabetes, alpha = .4),
+    columns = 1:4,
+    upper   = list(continuous = wrap("cor", size = 3.5)),
+    lower   = list(continuous = wrap("points", alpha = .3, size = .7)),
+    diag    = list(continuous = wrap("densityDiag"))
+  ) +
+  scale_colour_manual(values = c("No"="#00897b","Yes"="#e53935")) +
+  scale_fill_manual(values  = c("No"="#00897b","Yes"="#e53935")) +
+  labs(title = "Pairs Plot: Key Metabolic Variables by Diabetes Status")
+```
+
+---
+
+# Step 6 — Bivariate Analysis: Continuous vs Categorical
+
+## Box Plots by Group
+
+```{r group-box-bmi}
+nhanes |>
+  drop_na(bmi, race) |>
+  ggplot(aes(x = fct_reorder(race, bmi, median), y = bmi, fill = race)) +
+  geom_boxplot(outlier.alpha = .2, notch = TRUE, width = .55,
+               show.legend = FALSE) +
+  scale_fill_manual(values = pal_cat) +
+  coord_flip() +
+  labs(title    = "BMI Distribution by Race/Ethnicity",
+       subtitle = "Notched box: 95% CI around the median",
+       x = NULL, y = "BMI (kg/m²)")
+```
+
+## Violin + Box Overlay
+
+```{r violin-sbp-sex}
+nhanes |>
+  drop_na(sbp, sex) |>
+  ggplot(aes(x = sex, y = sbp, fill = sex, colour = sex)) +
+  geom_violin(alpha = .35, trim = FALSE) +
+  geom_boxplot(width = .18, outlier.shape = NA,
+               colour = "white", fill = "white", alpha = .8) +
+  geom_boxplot(width = .18, outlier.shape = NA,
+               fill = NA, linewidth = .7) +
+  scale_fill_manual(values   = pal_sex) +
+  scale_colour_manual(values = pal_sex) +
+  labs(title    = "Systolic BP by Sex",
+       subtitle = "Violin shows full distribution; inner box = IQR + median",
+       x = NULL, y = "SBP (mmHg)") +
+  theme(legend.position = "none")
+```
+
+## Ridge Plots — Distributions Across Many Groups
+
+```{r ridge-chol-education, fig.height=5}
+nhanes |>
+  drop_na(total_chol, education) |>
+  ggplot(aes(x = total_chol, y = fct_rev(education), fill = education)) +
+  geom_density_ridges(alpha = .75, scale = 1.3,
+                      quantile_lines = TRUE, quantiles = 2,
+                      show.legend = FALSE) +
+  scale_fill_manual(values = pal_cat) +
+  labs(title    = "Total Cholesterol by Education Level",
+       subtitle = "Vertical line inside each ridge = median",
+       x = "Total Cholesterol (mmol/L)", y = NULL)
+```
+
+## Mean ± SD Plot — Clinical Summary Chart
+
+```{r mean-sd-plot}
+nhanes |>
+  drop_na(sbp, diabetes, sex) |>
+  group_by(diabetes, sex) |>
+  summarise(
+    mean_sbp = mean(sbp),
+    sd_sbp   = sd(sbp),
+    n        = n(),
+    se       = sd_sbp / sqrt(n),
+    .groups  = "drop"
+  ) |>
+  ggplot(aes(x = diabetes, y = mean_sbp, fill = sex,
+             colour = sex, group = sex)) +
+  geom_col(position = position_dodge(.55), width = .5, alpha = .8) +
+  geom_errorbar(aes(ymin = mean_sbp - se, ymax = mean_sbp + se),
+                position = position_dodge(.55), width = .2, linewidth = .8) +
+  scale_fill_manual(values   = pal_sex) +
+  scale_colour_manual(values = pal_sex) +
+  scale_y_continuous(expand = expansion(mult = c(0, .1)),
+                     limits = c(0, NA)) +
+  labs(title    = "Mean Systolic BP by Diabetes Status and Sex",
+       subtitle = "Error bars = ± 1 standard error",
+       x = "Diabetes diagnosis", y = "Mean SBP (mmHg)",
+       fill = "Sex", colour = "Sex")
+```
+
+---
+
+# Step 7 — Bivariate Analysis: Categorical vs Categorical
+
+## Cross-Tabulation
+
+```{r crosstab}
+# Two-way frequency table
+nhanes |>
+  filter(!is.na(diabetes), !is.na(phys_active)) |>
+  tabyl(diabetes, phys_active) |>
+  adorn_totals(c("row","col")) |>
+  adorn_percentages("row") |>
+  adorn_pct_formatting(digits = 1) |>
+  adorn_ns(position = "front")
+```
+
+## Stacked & Grouped Bar Charts
+
+```{r stacked-bar}
+nhanes |>
+  drop_na(bmi_cat, diabetes) |>
+  count(bmi_cat, diabetes) |>
+  group_by(bmi_cat) |>
+  mutate(pct = n / sum(n) * 100) |>
+  ggplot(aes(x = bmi_cat, y = pct, fill = diabetes)) +
+  geom_col(position = "stack", width = .65) +
+  geom_text(aes(label = sprintf("%.0f%%", pct)),
+            position = position_stack(vjust = .5),
+            colour = "white", size = 3.5, fontface = "bold") +
+  scale_fill_manual(values = c("No" = "#00897b","Yes" = "#e53935")) +
+  scale_y_continuous(labels = label_percent(scale = 1)) +
+  labs(title    = "Diabetes Prevalence by BMI Category",
+       x = "BMI Category", y = "Percentage (%)", fill = "Diabetes") +
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+```
+
+## Heat Map — Prevalence Table
+
+```{r heatmap-tile}
+nhanes |>
+  drop_na(race, education) |>
+  count(race, education) |>
+  group_by(race) |>
+  mutate(pct = n / sum(n) * 100) |>
+  ggplot(aes(x = education, y = race, fill = pct)) +
+  geom_tile(colour = "white", linewidth = .8) +
+  geom_text(aes(label = sprintf("%.0f%%", pct)),
+            size = 3.2, colour = "white", fontface = "bold") +
+  scale_fill_gradient(low = "#b2dfdb", high = "#004d40",
+                      labels = label_percent(scale = 1)) +
+  labs(title = "Education Level by Race/Ethnicity (row %)",
+       x = NULL, y = NULL, fill = "% within race") +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1),
+        panel.grid  = element_blank())
+```
+
+---
+
+# Step 8 — Multivariate Exploration <span class="badge">5 min</span>
+
+## Faceting — Small Multiples
+
+```{r facet-bmi-sbp}
+nhanes |>
+  drop_na(bmi, sbp, sex, diabetes) |>
+  ggplot(aes(x = bmi, y = sbp, colour = sex)) +
+  geom_point(alpha = .2, size = .8) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = 1) +
+  scale_colour_manual(values = pal_sex) +
+  facet_grid(diabetes ~ sex, labeller = label_both) +
+  labs(title    = "BMI vs SBP, Stratified by Sex and Diabetes Status",
+       x = "BMI (kg/m²)", y = "SBP (mmHg)", colour = "Sex")
+```
+
+
+## BMI and BP: Three Variables in One Plot
+
+```{r three-var}
+nhanes |>
+  drop_na(bmi, sbp, age, diabetes) |>
+  mutate(age_grp = cut(age, breaks = c(18, 40, 60, Inf),
+                       labels = c("18–39","40–59","60+"))) |>
+  ggplot(aes(x = bmi, y = sbp, colour = age_grp, size = age)) +
+  geom_point(alpha = .25) +
+  geom_smooth(aes(group = age_grp), method = "lm",
+              se = FALSE, linewidth = 1, show.legend = FALSE) +
+  scale_colour_manual(values = c("#00897b","#1565c0","#c62828")) +
+  scale_size_continuous(range = c(.5, 3), guide = "none") +
+  facet_wrap(~diabetes, labeller = label_both) +
+  labs(title    = "BMI vs SBP by Age Group and Diabetes Status",
+       subtitle = "Point size proportional to age; lines = linear trend per age group",
+       x = "BMI (kg/m²)", y = "SBP (mmHg)", colour = "Age group")
+```
+
+---
+
+# Step 9 — EDA Summary Report
+
+After completing EDA, document your findings before any modelling. A good EDA
+summary answers these questions:
+
+```{r eda-summary-table}
+tibble(
+  Question = c(
+    "How large is the dataset?",
+    "What variables are available?",
+    "Which variables have high missingness?",
+    "What is the age range of participants?",
+    "Is BMI normally distributed?",
+    "What is the overall diabetes prevalence?",
+    "Which variables correlate most with SBP?",
+    "Are there clinically implausible values?",
+    "Key sex differences?",
+    "Does distribution of SBP differ by diabetes?"
+  ),
+  Finding = c(
+    sprintf("%d adults after deduplication and age filter", nrow(nhanes)),
+    "26 clinical, demographic, and behavioural variables",
+    "Triglycerides (>40%), glucose (~40%), depression (~30%)",
+    sprintf("%.0f – %.0f years (median %.0f)",
+            min(nhanes$age), max(nhanes$age), median(nhanes$age)),
+    "Right-skewed (mean > median); log-transformation recommended",
+    sprintf("%.1f%% (n = %d)",
+            mean(nhanes$diabetes == "Yes", na.rm=TRUE)*100,
+            sum(nhanes$diabetes == "Yes", na.rm=TRUE)),
+    "BMI (r ≈ 0.30), waist circumference (r ≈ 0.34), age (r ≈ 0.28)",
+    "No values outside physiological ranges after filtering to adults",
+    "Males: higher SBP; females: higher HDL, total cholesterol",
+    "Diabetic participants have higher median SBP and wider spread"
+  )
+) |>
+  gt() |>
+  tab_header(title = "EDA Summary — NHANES Adults 2009–2012") |>
+  cols_width(Question ~ px(300), Finding ~ px(400)) |>
+  tab_style(style = cell_text(weight = "bold"),
+            locations = cells_column_labels()) |>
+  tab_options(table.font.size = 12,
+              row.striping.background_color = "#f0f4f8")
+```
+
+---
+
+# Exercises <span class="badge">~8 min</span> {.tabset}
+
+## Exercise 1 — Missing Data
+
+**Investigate whether missingness in `sleep hours` is associated with `diabetes` status or `phys_active`.**  
+*Hint:* Create a `sleep_missing` flag with `is.na()`, then use `tabyl()` or `group_by() + summarise()`.
+
+### Answer
+
+```{r ex1}
+#your code here
+
+
+```
+
+```{r ex1b}
+# Also check by physical activity
+#your code here
+
+
+```
+
+## Exercise 2 — Distribution Deep-Dive
+
+**For `sleep_hrs`:**  
+1. Plot a histogram and density curve  
+2. Report mean, median, SD, and IQR  
+3. Is the distribution approximately normal?  
+
+### Answer
+
+```{r ex2}
+# 1. Plot
+
+
+
+```
+
+```{r ex2b}
+# 2. Summary statistics
+
+
+
+```
+
+## Exercise 3 — Group Comparison
+
+**Compare the distribution of `total_chol` across the four `bmi_cat` groups using a violin plot. Which group has the highest median cholesterol?**
+
+### Answer
+
+```{r ex3}
+#Your code here 
+ 
+```
+
+## Exercise 4 — Multivariate
+
+**Create a faceted scatter plot of `age` (x) vs `sbp` (y), faceted by `phys_active`, coloured by `sex`, with a linear trend line per sex. What pattern do you observe?**
+
+### Answer
+
+```{r ex4}
+# your code here
+
+
+```
+
+
+<div class="key">
+<strong>📌 Three golden rules of EDA</strong><br>
+1. <strong>Plot before you compute.</strong> No summary statistic substitutes for seeing the data.<br>
+2. <strong>Question every anomaly.</strong> Outliers and unexpected patterns are often the most informative findings.<br>
+3. <strong>Document as you go.</strong> Write your observations in prose between code chunks — your collaborators (and future self) will thank you.
+</div>
+
+---
+
+# Resources
+
+| Resource | Link |
+|---|---|
+| R for Data Science — EDA chapter | https://r4ds.hadley.nz/eda |
+| ggplot2 documentation | https://ggplot2.tidyverse.org |
+| skimr package | https://docs.ropensci.org/skimr |
+| GGally package | https://ggobi.github.io/ggally |
+| NHANES dataset docs | `?NHANES` in R console |
+| Posit cheatsheets | https://posit.co/resources/cheatsheets |
+
+```{r session-info, echo=FALSE}
+sessionInfo()
+```

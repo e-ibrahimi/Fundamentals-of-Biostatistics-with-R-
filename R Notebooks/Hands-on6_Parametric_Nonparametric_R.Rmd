@@ -1,0 +1,931 @@
+---
+title: "Parametric & Non-Parametric Tests"
+author: ''
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    df_print: paged
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+    number_sections: true
+subtitle: "Fundamentals of Biostatistics — Hands-on Session"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 7, fig.height = 4)
+```
+
+---
+
+# Setup
+
+```{r packages}
+if (!require(ggplot2))  install.packages("ggplot2")
+if (!require(dplyr))    install.packages("dplyr")
+if (!require(tidyr))    install.packages("tidyr")
+if (!require(car))      install.packages("car")       # Levene's test
+if (!require(rstatix))  install.packages("rstatix")   # effect sizes, pipe-friendly tests
+if (!require(ggpubr))   install.packages("ggpubr")    # Q-Q plots, publication figures
+if (!require(coin))     install.packages("coin")       # exact non-parametric tests
+if (!require(FSA))      install.packages("FSA")        # Dunn post-hoc test
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(car)
+library(rstatix)
+library(ggpubr)
+library(coin)
+library(FSA)
+```
+
+---
+
+# One-sample t-test
+
+## Clinical scenario
+
+Resting systolic blood pressure (SBP) in healthy adults is established at
+**120 mmHg**. A clinician suspects that patients with early-stage chronic kidney
+disease (CKD) have elevated SBP even before diagnosis. A sample of 30 CKD
+patients is measured at their first clinic visit.
+
+**Hypotheses:**
+- H₀: μ = 120 mmHg (CKD patients have normal SBP)
+- H₁: μ ≠ 120 mmHg (two-tailed)
+
+```{r one-sample-data}
+#simulate the data
+
+set.seed(42)
+sbp_ckd <- round(rnorm(30, mean = 128, sd = 14), 1)
+
+cat("n    =", length(sbp_ckd), "\n")
+cat("Mean =", round(mean(sbp_ckd), 2), "mmHg\n")
+cat("SD   =", round(sd(sbp_ckd),   2), "mmHg\n")
+cat("SE   =", round(sd(sbp_ckd) / sqrt(length(sbp_ckd)), 2), "mmHg\n")
+```
+
+## Assumption check — normality
+
+For a one-sample t-test with n = 30, normality of the outcome is required.
+
+```{r one-sample-normality, fig.height=3.5}
+# Shapiro-Wilk test (sensitive to departures from normality; best for n < 50)
+shapiro.test(sbp_ckd)
+
+# Q-Q plot
+ggqqplot(sbp_ckd, title = "Q-Q plot — SBP in CKD patients") +
+  labs(x = "Theoretical quantiles", y = "Sample quantiles (mmHg)")
+```
+
+> **Interpretation:** p > 0.05 on Shapiro-Wilk and points close to the line on
+> the Q-Q plot → normality assumption is satisfied → proceed with t-test.
+
+## Run the test
+
+```{r one-sample-test}
+result_1s <- t.test(sbp_ckd, mu = 120, alternative = "two.sided")
+print(result_1s)
+```
+
+## Effect size — Cohen's d
+
+```{r one-sample-d}
+cohens_d <- (mean(sbp_ckd) - 120) / sd(sbp_ckd)
+cat("Cohen's d =", round(cohens_d, 3),
+    " | Interpretation:",
+    ifelse(abs(cohens_d) < 0.2, "negligible",
+    ifelse(abs(cohens_d) < 0.5, "small",
+    ifelse(abs(cohens_d) < 0.8, "medium", "large"))), "\n")
+```
+
+## Interpret and report
+
+```{r one-sample-report}
+cat("Mean SBP in CKD patients:", round(mean(sbp_ckd), 1), "mmHg\n")
+cat("95% CI: [",
+    round(result_1s$conf.int[1], 1), ",",
+    round(result_1s$conf.int[2], 1), "] mmHg\n")
+cat("t(", result_1s$parameter, ") =",
+    round(result_1s$statistic, 3),
+    ", p =", round(result_1s$p.value, 4), "\n")
+```
+
+> **Conclusion:** Mean SBP in early CKD patients was significantly higher than
+> the reference value of 120 mmHg (t(29) = 2.793, p < 0.05, Cohen's d = 0.51, medium).
+> This suggests subclinical hypertension may be present at CKD diagnosis.
+
+## Non-parametric analogue — Wilcoxon signed-rank test (one-sample)
+
+Use when the normality assumption is violated. Instead of testing whether
+the **mean** equals a reference value, this test asks whether the **median**
+of the population equals the reference value. It works by ranking the absolute
+deviations from the reference and checking whether positive and negative ranks
+are balanced.
+
+To demonstrate, we simulate a skewed version of the CKD data where normality
+fails (e.g. pain scores, length of stay — common in clinical data).
+
+```{r onesample-np-data}
+set.seed(101)
+# Simulate skewed outcome — e.g. urinary protein excretion (mg/day)
+# Reference value in healthy adults: 150 mg/day
+protein <- round(rexp(25, rate = 1/220), 0)  # right-skewed
+
+cat("n      =", length(protein), "\n")
+cat("Median =", median(protein), "mg/day\n")
+cat("Mean   =", round(mean(protein), 1), "mg/day\n\n")
+
+# Normality check — expect failure with skewed data
+shapiro.test(protein)
+```
+
+```{r onesample-np-hist, fig.height=3.5}
+ggplot(data.frame(protein), aes(x = protein)) +
+  geom_histogram(bins = 12, fill = "#FAC775", colour = "#854F0B", alpha = 0.8) +
+  geom_vline(xintercept = 150, linetype = "dashed", colour = "#D85A30",
+             linewidth = 1) +
+  annotate("text", x = 160, y = 4, label = "Reference\n150 mg/day",
+           colour = "#D85A30", size = 3.5, hjust = 0) +
+  labs(title   = "Urinary protein excretion in CKD patients (skewed)",
+       x = "Protein excretion (mg/day)", y = "Count") +
+  theme_minimal(base_size = 13)
+```
+
+```{r onesample-np-test}
+# Wilcoxon signed-rank test — mu is the reference value (null median)
+wilcox.test(protein, mu = 150, alternative = "two.sided", conf.int = TRUE)
+```
+V = 205.5, p-value = 0.2528, No significant difference. 
+
+```{r onesample-np-effect}
+# Effect size r = Z / sqrt(N) — common for Wilcoxon tests
+wt <- wilcox.test(protein, mu = 150, alternative = "two.sided")
+# Use rstatix for a clean effect size
+wilcox_effsize_1s <- wilcox_effsize(
+  data.frame(protein, ref = 150),
+  protein ~ 1, mu = 150
+)
+cat("Effect size r =", round(wilcox_effsize_1s$effsize, 3), "\n")
+cat("Interpretation: small < 0.1, medium < 0.3, large >= 0.5\n")
+```
+
+> **When to choose:** If Shapiro-Wilk p < 0.05 or the data are clearly skewed
+> (histograms, boxplots), use `wilcox.test()`. Report the **median and IQR**
+> rather than mean and SD. The Wilcoxon test is nearly as powerful as the
+> t-test when normality holds, and more valid when it does not.
+
+---
+
+# Independent samples t-test
+
+## Epidemiological scenario
+
+A community health survey compares fasting blood glucose (FBG) between two
+groups: adults with a **sedentary lifestyle** vs. those who are **physically
+active** (≥ 150 min/week moderate activity). The outcome is FBG in mg/dL.
+
+**Hypotheses:**
+- H₀: μ_sedentary = μ_active
+- H₁: μ_sedentary ≠ μ_active
+
+```{r indep-data}
+
+#simulate the data for each group
+set.seed(7)
+sedentary <- round(rnorm(35, mean = 102, sd = 15), 1)
+active    <- round(rnorm(40, mean = 93,  sd = 13), 1)
+
+df_fbg <- data.frame(
+  fbg   = c(sedentary, active),
+  group = factor(c(rep("Sedentary", 35), rep("Active", 40)),
+                 levels = c("Sedentary", "Active"))
+)
+
+df_fbg %>%
+  group_by(group) %>%
+  summarise(n = n(), mean = round(mean(fbg), 2),
+            sd = round(sd(fbg), 2), se = round(sd(fbg)/sqrt(n()), 2))
+```
+
+## Assumption checks
+
+### 1. Normality (per group)
+
+```{r indep-normality, fig.height=3.5}
+df_fbg %>%
+  group_by(group) %>%
+  summarise(W = shapiro.test(fbg)$statistic,
+            p = shapiro.test(fbg)$p.value)
+
+ggqqplot(df_fbg, x = "fbg", facet.by = "group",
+         title = "Q-Q plots — fasting blood glucose by activity group")
+```
+
+### 2. Homogeneity of variance — Levene's test
+
+```{r levene}
+leveneTest(fbg ~ group, data = df_fbg)
+```
+
+> **Decision rule:**
+> - Levene p > 0.05 → variances are equal → use standard `var.equal = TRUE`
+> - Levene p ≤ 0.05 → variances differ → use Welch correction (`var.equal = FALSE`, the default in R)
+
+## Visualise
+
+```{r indep-plot, fig.height=4}
+ggplot(df_fbg, aes(x = group, y = fbg, fill = group)) +
+  geom_boxplot(alpha = 0.7, width = 0.5, outlier.shape = 21) +
+  geom_jitter(width = 0.15, alpha = 0.4, size = 1.5) +
+  scale_fill_manual(values = c("Sedentary" = "#F0997B", "Active" = "#5DCAA5")) +
+  labs(title   = "Fasting blood glucose by physical activity level",
+       x = NULL, y = "FBG (mg/dL)") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+## Run the test
+
+```{r indep-test}
+# var.equal = FALSE uses Welch correction (safer default)
+result_indep <- t.test(fbg ~ group, data = df_fbg, var.equal = FALSE)
+print(result_indep)
+```
+
+## Effect size
+
+```{r indep-effect}
+cohens_d_indep <- df_fbg %>% cohens_d(fbg ~ group)
+print(cohens_d_indep)
+```
+
+> **Conclusion:** Sedentary adults had significantly higher FBG than active
+> adults. Report as: mean difference = X mg/dL (95% CI: [L, U]),
+> t(58.55) = 3.8086, p = 0.00034, Cohen's d = 0.89.
+
+## Non-parametric analogue — Mann-Whitney U test
+
+Also called the Wilcoxon rank-sum test. Use when normality is violated in
+either group. It compares the **rank distributions** of two independent groups
+rather than their means — equivalent to testing whether a randomly selected
+observation from group 1 tends to be larger than one from group 2.
+
+To demonstrate, we simulate a scenario where hospital length of stay (LOS)
+is compared between patients admitted via the emergency department vs. elective
+admission — a classically right-skewed outcome.
+
+```{r mwu-data}
+set.seed(33)
+los_emergency <- round(rexp(40, rate = 1/6.5))   # median ~5 days, right-skewed
+los_elective  <- round(rexp(38, rate = 1/3.8))   # median ~3 days
+
+df_los <- data.frame(
+  los    = c(los_emergency, los_elective),
+  route  = factor(c(rep("Emergency", 40), rep("Elective", 38)),
+                  levels = c("Emergency", "Elective"))
+)
+
+# Summary: median and IQR more appropriate for skewed data
+df_los %>%
+  group_by(route) %>%
+  summarise(n      = n(),
+            median = median(los),
+            IQR    = IQR(los),
+            mean   = round(mean(los), 1))
+```
+
+```{r mwu-normality}
+# Confirm normality violation
+df_los %>%
+  group_by(route) %>%
+  summarise(W = round(shapiro.test(los)$statistic, 4),
+            p = round(shapiro.test(los)$p.value, 4))
+```
+
+```{r mwu-plot, fig.height=4}
+ggplot(df_los, aes(x = route, y = los, fill = route)) +
+  geom_boxplot(alpha = 0.7, width = 0.5, outlier.shape = 21) +
+  geom_jitter(width = 0.15, alpha = 0.4, size = 1.5) +
+  scale_fill_manual(values = c("Emergency" = "#F0997B",
+                                "Elective"  = "#5DCAA5")) +
+  labs(title   = "Hospital length of stay by admission route",
+       subtitle = "Right-skewed outcome — Mann-Whitney U preferred",
+       x = NULL, y = "Length of stay (days)") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+```{r mwu-test}
+# Mann-Whitney U / Wilcoxon rank-sum test
+wilcox.test(los ~ route, data = df_los,
+            alternative = "two.sided", conf.int = TRUE)
+```
+
+```{r mwu-effect}
+# Effect size r for Mann-Whitney U
+mwu_eff <- df_los %>% wilcox_effsize(los ~ route)
+print(mwu_eff)
+```
+
+> **Reporting:** Emergency admissions had significantly longer hospital stays
+> than elective admissions (median X vs. X days; W = X, p = X, r = X).
+> Report medians and IQRs — not means — for skewed data.
+
+---
+
+# Paired t-test
+
+## Clinical scenario
+
+A clinical trial evaluates whether an **8-week dietary intervention** reduces
+LDL cholesterol. The same 25 patients are measured at baseline and after
+8 weeks. This is a paired design — each patient is their own control.
+
+**Hypotheses:**
+- H₀: μ_difference = 0 (no change in LDL)
+- H₁: μ_difference ≠ 0
+
+```{r paired-data}
+set.seed(15)
+n_paired    <- 25
+ldl_before  <- round(rnorm(n_paired, mean = 148, sd = 22), 1)
+ldl_after   <- round(ldl_before - rnorm(n_paired, mean = 18, sd = 12), 1)
+differences <- ldl_after - ldl_before
+
+df_ldl <- data.frame(
+  patient = 1:n_paired,
+  before  = ldl_before,
+  after   = ldl_after,
+  diff    = differences
+)
+
+cat("Mean LDL before:", round(mean(ldl_before), 2), "mg/dL\n")
+cat("Mean LDL after: ", round(mean(ldl_after),  2), "mg/dL\n")
+cat("Mean difference:", round(mean(differences), 2), "mg/dL\n")
+cat("SD of differences:", round(sd(differences), 2), "mg/dL\n")
+```
+
+## Assumption check
+
+For a paired t-test, normality of the **differences** is required — not of
+the raw measurements.
+
+```{r paired-normality, fig.height=3.5}
+shapiro.test(differences)
+
+ggqqplot(differences,
+         title = "Q-Q plot — LDL differences (after − before)")
+```
+
+## Visualise — spaghetti plot
+
+```{r paired-spaghetti, fig.height=4}
+df_long <- df_ldl %>%
+  select(patient, before, after) %>%
+  pivot_longer(cols = c(before, after),
+               names_to = "time", values_to = "ldl") %>%
+  mutate(time = factor(time, levels = c("before", "after")))
+
+ggplot(df_long, aes(x = time, y = ldl, group = patient)) +
+  geom_line(alpha = 0.35, colour = "#378ADD") +
+  geom_point(aes(colour = time), size = 2.5, alpha = 0.8) +
+  stat_summary(aes(group = 1), fun = mean, geom = "line",
+               colour = "#D85A30", linewidth = 1.5) +
+  stat_summary(aes(group = 1), fun = mean, geom = "point",
+               colour = "#D85A30", size = 4) +
+  scale_colour_manual(values = c("before" = "#85B7EB", "after" = "#1D9E75")) +
+  scale_x_discrete(labels = c("before" = "Baseline", "after" = "8 weeks")) +
+  labs(title   = "LDL cholesterol before and after dietary intervention",
+       subtitle = "Blue lines = individual patients · Red = group mean",
+       x = NULL, y = "LDL (mg/dL)") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+## Run the test
+
+```{r paired-test}
+result_paired <- t.test(ldl_after, ldl_before,
+                        paired = TRUE, alternative = "two.sided")
+print(result_paired)
+```
+
+## Effect size
+
+```{r paired-effect}
+d_paired <- mean(differences) / sd(differences)
+cat("Cohen's d (paired) =", round(d_paired, 3), "\n")
+```
+
+> **Conclusion:** The dietary intervention produced a mean LDL reduction of
+> X mg/dL (95% CI: [L, U]), which was statistically significant (t(24) = X,
+> p < 0.05, Cohen's d = X). This represents a clinically meaningful reduction.
+
+## Non-parametric analogue — Wilcoxon signed-rank test (paired)
+
+Use when the **differences** between paired measurements are not normally
+distributed. This is common with pain scores, quality-of-life scales, or small
+samples. The test ranks the absolute differences and checks whether positive
+ranks outweigh negative ranks.
+
+We simulate pain scores (0–10 NRS) before and after an analgesic intervention
+in 20 patients — ordinal data with a bounded range, where normality of
+differences is unlikely.
+
+```{r paired-np-data}
+set.seed(77)
+n_pain     <- 20
+pain_before <- sample(5:9, n_pain, replace = TRUE)
+pain_after  <- pmax(0, pain_before - sample(0:5, n_pain, replace = TRUE))
+pain_diff   <- pain_after - pain_before
+
+df_pain <- data.frame(
+  patient     = 1:n_pain,
+  before      = pain_before,
+  after       = pain_after,
+  diff        = pain_diff
+)
+
+cat("Median pain before:", median(pain_before), "\n")
+cat("Median pain after: ", median(pain_after),  "\n")
+cat("Median difference: ", median(pain_diff),   "\n\n")
+
+shapiro.test(pain_diff)
+```
+
+```{r paired-np-plot, fig.height=4}
+df_pain_long <- df_pain %>%
+  pivot_longer(cols = c(before, after),
+               names_to = "time", values_to = "pain") %>%
+  mutate(time = factor(time, levels = c("before", "after")))
+
+ggplot(df_pain_long, aes(x = time, y = pain, group = patient)) +
+  geom_line(alpha = 0.35, colour = "#378ADD") +
+  geom_point(aes(colour = time), size = 2.5, alpha = 0.8) +
+  stat_summary(aes(group = 1), fun = median, geom = "line",
+               colour = "#D85A30", linewidth = 1.5) +
+  stat_summary(aes(group = 1), fun = median, geom = "point",
+               colour = "#D85A30", size = 4) +
+  scale_colour_manual(values = c("before" = "#85B7EB", "after" = "#1D9E75")) +
+  scale_x_discrete(labels = c("before" = "Pre-treatment",
+                               "after"  = "Post-treatment")) +
+  scale_y_continuous(breaks = 0:10, limits = c(0, 10)) +
+  labs(title    = "Pain scores before and after analgesic intervention",
+       subtitle = "Blue lines = individual patients · Red = group median",
+       x = NULL, y = "Pain score (NRS 0–10)") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+```{r paired-np-test}
+wilcox.test(pain_after, pain_before,
+            paired = TRUE, alternative = "two.sided", conf.int = TRUE)
+```
+
+```{r paired-np-effect}
+pain_long2 <- data.frame(
+  pain = c(pain_before, pain_after),
+  time = factor(rep(c("before", "after"), each = n_pain),
+                levels = c("before", "after")),
+  id   = rep(1:n_pain, 2)
+)
+paired_eff <- pain_long2 %>% wilcox_effsize(pain ~ time, paired = TRUE)
+print(paired_eff)
+```
+
+> **Reporting:** Pain scores were significantly reduced after treatment
+> (median X vs. X; V = X, p = X, r = X). When reporting Wilcoxon paired
+> results, use V (the test statistic), not W, and report medians with IQR.
+
+---
+
+# One-way ANOVA
+
+## Epidemiological scenario
+
+A population survey measures **BMI** across four dietary pattern groups:
+Western, Mediterranean, Vegetarian, and Traditional. The research question
+is whether mean BMI differs across groups.
+
+**Hypotheses:**
+- H₀: μ_Western = μ_Mediterranean = μ_Vegetarian = μ_Traditional
+- H₁: At least one group mean differs
+
+```{r anova-data}
+set.seed(99)
+diet_data <- data.frame(
+  bmi  = c(round(rnorm(40, 28.5, 4.2), 1),
+            round(rnorm(38, 25.1, 3.8), 1),
+            round(rnorm(35, 24.3, 3.5), 1),
+            round(rnorm(42, 26.8, 4.0), 1)),
+  diet = factor(rep(c("Western", "Mediterranean",
+                       "Vegetarian", "Traditional"), c(40, 38, 35, 42)))
+)
+
+diet_data %>%
+  group_by(diet) %>%
+  summarise(n    = n(),
+            mean = round(mean(bmi), 2),
+            sd   = round(sd(bmi),   2),
+            se   = round(sd(bmi) / sqrt(n()), 2)) %>%
+  arrange(desc(mean))
+```
+
+## Assumption checks
+
+### 1. Normality per group
+
+```{r anova-normality}
+diet_data %>%
+  group_by(diet) %>%
+  summarise(W = round(shapiro.test(bmi)$statistic, 4),
+            p = round(shapiro.test(bmi)$p.value, 4))
+```
+
+```{r anova-qq, fig.height=5}
+ggqqplot(diet_data, x = "bmi", facet.by = "diet",
+         title = "Q-Q plots — BMI by dietary pattern")
+```
+
+### 2. Homogeneity of variance
+
+```{r anova-levene}
+leveneTest(bmi ~ diet, data = diet_data)
+```
+
+### 3. Visualise distributions
+
+```{r anova-plot, fig.height=4.5}
+diet_order <- diet_data %>%
+  group_by(diet) %>%
+  summarise(m = mean(bmi)) %>%
+  arrange(m) %>%
+  pull(diet)
+
+diet_data$diet <- factor(diet_data$diet, levels = diet_order)
+
+ggplot(diet_data, aes(x = diet, y = bmi, fill = diet)) +
+  geom_violin(alpha = 0.5, trim = FALSE) +
+  geom_boxplot(width = 0.15, alpha = 0.8, outlier.shape = 21) +
+  scale_fill_manual(values = c(
+    "Western"       = "#F0997B",
+    "Traditional"   = "#FAC775",
+    "Mediterranean" = "#5DCAA5",
+    "Vegetarian"    = "#9FE1CB")) +
+  labs(title   = "BMI distribution by dietary pattern",
+       x = NULL, y = "BMI (kg/m²)") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+## Run one-way ANOVA
+
+```{r anova-run}
+model_anova <- aov(bmi ~ diet, data = diet_data)
+summary(model_anova)
+```
+
+## Effect size — η² (eta-squared)
+
+```{r anova-eta}
+# Correct usage - pass the model, not a formula
+eta_sq <- eta_squared(model_anova)
+print(eta_sq)
+
+# Manual calculation
+ss_between <- summary(model_anova)[[1]]["diet",   "Sum Sq"]
+ss_total   <- sum(summary(model_anova)[[1]][, "Sum Sq"])
+eta2       <- ss_between / ss_total
+
+cat("η² =", round(eta2, 3),
+    "| Interpretation:",
+    ifelse(eta2 < 0.01, "negligible",
+    ifelse(eta2 < 0.06, "small",
+    ifelse(eta2 < 0.14, "medium", "large"))), "\n")
+```
+
+## Post-hoc tests — Tukey HSD
+
+Run only because ANOVA is significant. Tukey HSD controls the family-wise
+error rate across all pairwise comparisons.
+
+```{r tukey}
+tukey_result <- TukeyHSD(model_anova)
+print(tukey_result)
+```
+
+```{r tukey-plot, fig.height=4}
+tukey_df <- as.data.frame(tukey_result$diet) %>%
+  tibble::rownames_to_column("comparison") %>%
+  mutate(significant = `p adj` < 0.05)
+
+ggplot(tukey_df, aes(x = reorder(comparison, diff),
+                     y = diff, colour = significant)) +
+  geom_hline(yintercept = 0, linetype = "dashed",
+             colour = "gray60", linewidth = 0.7) +
+  geom_errorbar(aes(ymin = lwr, ymax = upr), width = 0.2, linewidth = 0.8) +
+  geom_point(size = 3) +
+  scale_colour_manual(values = c("TRUE" = "#1D9E75", "FALSE" = "#888780"),
+                      labels = c("TRUE" = "p < 0.05", "FALSE" = "p ≥ 0.05")) +
+  coord_flip() +
+  labs(title   = "Tukey HSD — pairwise BMI differences by diet group",
+       x = NULL, y = "Mean difference in BMI (kg/m²)",
+       colour = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+> **Conclusion:** One-way ANOVA revealed a significant difference in mean BMI
+> across dietary pattern groups (F(3, X) = X, p < 0.05, η² = X). Post-hoc
+> Tukey HSD identified significantly higher BMI in the Western diet group
+> compared to Mediterranean and Vegetarian groups (p < 0.05).
+
+## Non-parametric analogue — Kruskal-Wallis test
+
+Use when normality is violated in one or more groups, or when the outcome is
+ordinal. It is the rank-based extension of the Mann-Whitney U test to 3+
+groups. Like ANOVA it tests whether at least one group differs, but it
+compares **rank distributions** rather than means.
+
+We simulate patient-reported quality of life (QoL) scores (0–100) across
+three cancer treatment arms — an outcome that is often bounded, skewed, and
+unlikely to be normally distributed.
+
+```{r kw-data}
+set.seed(44)
+qol_data <- data.frame(
+  qol = c(round(rbeta(35, 2, 5) * 100),    # Surgery — lower QoL
+           round(rbeta(33, 3, 4) * 100),    # Chemo — moderate
+           round(rbeta(36, 4, 3) * 100)),   # Targeted therapy — higher
+  arm = factor(rep(c("Surgery", "Chemotherapy", "Targeted therapy"),
+                   c(35, 33, 36)))
+)
+
+qol_data %>%
+  group_by(arm) %>%
+  summarise(n      = n(),
+            median = median(qol),
+            IQR    = IQR(qol),
+            mean   = round(mean(qol), 1))
+```
+
+```{r kw-normality}
+qol_data %>%
+  group_by(arm) %>%
+  summarise(W = round(shapiro.test(qol)$statistic, 4),
+            p = round(shapiro.test(qol)$p.value, 4))
+```
+
+```{r kw-plot, fig.height=4.5}
+ggplot(qol_data, aes(x = reorder(arm, qol, FUN = median),
+                     y = qol, fill = arm)) +
+  geom_violin(alpha = 0.5, trim = FALSE) +
+  geom_boxplot(width = 0.15, alpha = 0.85, outlier.shape = 21) +
+  scale_fill_manual(values = c(
+    "Surgery"           = "#F0997B",
+    "Chemotherapy"      = "#FAC775",
+    "Targeted therapy"  = "#5DCAA5")) +
+  labs(title   = "Quality of life scores by cancer treatment arm",
+       subtitle = "Skewed distributions — Kruskal-Wallis preferred",
+       x = NULL, y = "QoL score (0–100)") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+```{r kw-test}
+kruskal.test(qol ~ arm, data = qol_data)
+```
+
+```{r kw-effect}
+# Effect size epsilon-squared (η²_H) for Kruskal-Wallis
+kw_eff <- qol_data %>% kruskal_effsize(qol ~ arm)
+print(kw_eff)
+cat("\nInterpretation: small < 0.06, medium < 0.14, large >= 0.14\n")
+```
+
+## Post-hoc — Dunn test with Bonferroni correction
+
+```{r dunn}
+dunn_result <- dunnTest(qol ~ arm, data = qol_data, method = "bonferroni")
+print(dunn_result)
+```
+
+```{r dunn-plot, fig.height=3.5}
+dunn_df <- dunn_result$res %>%
+  mutate(significant = P.adj < 0.05)
+
+ggplot(dunn_df, aes(x = reorder(Comparison, Z),
+                    y = Z, colour = significant)) +
+  geom_hline(yintercept = 0, linetype = "dashed",
+             colour = "gray60", linewidth = 0.7) +
+  geom_point(size = 4) +
+  geom_segment(aes(xend = reorder(Comparison, Z), yend = 0),
+               linewidth = 1) +
+  scale_colour_manual(values = c("TRUE" = "#1D9E75", "FALSE" = "#888780"),
+                      labels = c("TRUE" = "p_adj < 0.05",
+                                 "FALSE" = "p_adj ≥ 0.05")) +
+  coord_flip() +
+  labs(title   = "Dunn test — pairwise QoL comparisons (Bonferroni)",
+       x = NULL, y = "Z statistic",
+       colour = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+> **Reporting:** QoL scores differed significantly across treatment arms
+> (Kruskal-Wallis H(2) = X, p = X, ε² = X). Dunn post-hoc tests with
+> Bonferroni correction showed targeted therapy had significantly higher
+> QoL than surgery (p_adj = X). Report medians and IQRs throughout.
+
+---
+
+# Statistical significance vs. clinical importance
+
+A common error is equating a small p-value with a large or important effect.
+Large samples can detect trivial differences.
+
+```{r sig-vs-clinical}
+set.seed(55)
+
+# Same 2 mmHg difference — tiny samples (underpowered) vs. huge sample
+results <- lapply(c(20, 50, 100, 500, 2000), function(n) {
+  g1 <- rnorm(n, mean = 130, sd = 15)
+  g2 <- rnorm(n, mean = 132, sd = 15)   # only 2 mmHg difference
+  tt <- t.test(g1, g2)
+  d  <- (mean(g2) - mean(g1)) / sqrt((var(g1) + var(g2)) / 2)
+  data.frame(n = n, p_value = round(tt$p.value, 4),
+             cohens_d = round(d, 3),
+             significant = tt$p.value < 0.05)
+})
+
+do.call(rbind, results)
+```
+
+> **Key lesson:** The 2 mmHg difference is clinically negligible but becomes
+> statistically significant at large n. Always report effect sizes alongside
+> p-values. A significant p-value answers "is the difference real?" — not
+> "does the difference matter clinically?"
+
+---
+
+
+# Exercises
+
+**Exercise 1 
+A hospital reports that average patient wait time in the emergency department
+is 45 minutes. An audit of 28 randomly selected visits finds a mean of 52
+minutes (SD = 11 min). Is there evidence that actual wait times exceed the
+reported value? Use α = 0.05, one-tailed.
+
+```{r ex1, eval=FALSE}
+# Your code here — remember to check normality first
+
+```
+
+**Exercise 2 
+A study compares haemoglobin (Hb) levels in anaemic patients randomised to
+oral iron supplementation vs. IV iron infusion after 12 weeks:
+
+```{r ex2-data}
+set.seed(3)
+oral_iron <- round(rnorm(30, mean = 10.8, sd = 1.6), 1)
+iv_iron   <- round(rnorm(30, mean = 11.9, sd = 1.4), 1)
+```
+
+Check assumptions, run the appropriate test, report the result with effect size.
+
+```{r ex2, eval=FALSE}
+# Your code here
+
+```
+
+**Exercise 3 
+Blood pressure is measured in 20 hypertensive patients before and 6 weeks
+after starting an ACE inhibitor:
+
+```{r ex3-data}
+set.seed(8)
+bp_before <- round(rnorm(20, mean = 158, sd = 12), 1)
+bp_after  <- round(bp_before - rnorm(20, mean = 14, sd = 9), 1)
+```
+
+Check that the differences are normally distributed, run a test,
+and construct a spaghetti plot.
+
+```{r ex3, eval=FALSE}
+# Your code here
+
+```
+
+**Exercise 4 
+A clinical trial randomises 120 patients with type 2 diabetes to three
+treatments: metformin, lifestyle modification, or combination therapy.
+HbA1c (%) is measured after 6 months:
+
+```{r ex4-data}
+set.seed(22)
+hba1c_data <- data.frame(
+  hba1c = c(round(rnorm(40, 7.4, 0.9), 1),
+             round(rnorm(40, 7.1, 0.8), 1),
+             round(rnorm(40, 6.6, 0.7), 1)),
+  treatment = factor(rep(c("Metformin", "Lifestyle", "Combination"), each = 40))
+)
+```
+
+Check assumptions, run test, report effect size, and identify which treatments differ. Produce a boxplot with significance annotations.
+
+```{r ex4, eval=FALSE}
+# Your code here
+
+```
+
+**Exercise 5 
+A published paper reports: *"Mean systolic BP was 2.1 mmHg lower in the
+treatment group (p = 0.003)."* The study enrolled n = 8,000 participants.
+
+- What is the likely explanation for the highly significant p-value?
+- Calculate Cohen's d assuming SD = 15 mmHg. Interpret it.
+- What additional information would you want before judging clinical importance?
+
+```{r ex5, eval=FALSE}
+# Calculate Cohen's d and reflect in comments
+
+```
+
+---
+
+**Exercise 6 
+A study compares time-to-discharge (days) in patients receiving standard care
+vs. an accelerated rehabilitation programme after hip replacement surgery:
+
+```{r ex6-data}
+set.seed(66)
+standard_care <- round(rexp(28, rate = 1/7.5))
+accel_rehab   <- round(rexp(28, rate = 1/5.2))
+```
+
+Confirm normality is violated, run the appropriate test, calculate the
+effect size, and produce a boxplot with the median labelled.
+
+```{r ex6, eval=FALSE}
+# Your code here
+
+```
+
+**Exercise 7 
+Anxiety scores (GAD-7, range 0–21) are recorded in 18 patients before and
+after an 6-week mindfulness programme:
+
+```{r ex7-data}
+set.seed(88)
+gad_before <- sample(10:18, 18, replace = TRUE)
+gad_after  <- pmax(0, gad_before - sample(0:8, 18, replace = TRUE))
+```
+
+Check normality of differences. Run the appropriate test and produce a
+spaghetti plot with the median trajectory highlighted.
+
+```{r ex7, eval=FALSE}
+# Your code here
+
+```
+
+**Exercise 8 
+Serum ferritin levels (μg/L) are compared across four iron deficiency severity
+groups: none, mild, moderate, severe:
+
+```{r ex8-data}
+set.seed(11)
+ferritin_data <- data.frame(
+  ferritin  = c(round(rexp(25, rate = 1/120)),
+                round(rexp(25, rate = 1/55)),
+                round(rexp(25, rate = 1/22)),
+                round(rexp(25, rate = 1/8))),
+  severity  = factor(rep(c("None", "Mild", "Moderate", "Severe"), each = 25),
+                     levels = c("None", "Mild", "Moderate", "Severe"))
+)
+```
+
+Confirm normality, run test, calculate effect size, and identify which
+severity groups differ.
+
+```{r ex8, eval=FALSE}
+# Your code here
+
+```
+
+
+---
+
+# Session info
+
+```{r session}
+sessionInfo()
+```

@@ -1,0 +1,628 @@
+---
+title: "Linear Models — ANOVA and Regression"
+subtitle: "Fundamentals of Biostatistics — Hands-on Session 7"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    df_print: paged
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 7, fig.height = 4.5)
+```
+
+---
+
+# Overview
+
+This session introduces linear models as a unified framework that covers both
+ANOVA and regression. All of these models share the same underlying equation:
+
+$$Y = \beta_0 + \beta_1 X_1 + \beta_2 X_2 + \cdots + \beta_k X_k + \varepsilon$$
+
+The difference lies in whether the predictors X are categorical (ANOVA),
+continuous (regression), or both (ANCOVA / multiple regression).
+
+| Model | Predictors | Typical question |
+|---|---|---|
+| One-way ANOVA | 1 categorical | Does mean cholesterol differ by race? |
+| Two-way ANOVA | 2 categorical | Does it differ by race and gender? |
+| Simple linear regression | 1 continuous | Does DBP predict cholesterol? |
+| Multiple linear regression | Mixed | What predicts cholesterol after adjustment? |
+
+---
+
+# Setup
+
+```{r packages}
+if (!require(tidyverse)) install.packages("tidyverse")
+if (!require(GGally))    install.packages("GGally")
+if (!require(emmeans))   install.packages("emmeans")
+if (!require(car))       install.packages("car")      # VIF, Levene
+if (!require(ggpubr))    install.packages("ggpubr")   # Q-Q plots
+if (!require(broom))     install.packages("broom")    # tidy model output
+if (!require(broom))     install.packages("emmeans")
+
+library(tidyverse)
+library(GGally)
+library(emmeans)
+library(car)
+library(ggpubr)
+library(broom)
+library(emmeans)
+```
+
+---
+
+# The dataset
+
+We use the `coronary` dataset from a hypothetical clinical study of 200
+participants. After removing missing values, the working dataset contains
+64 complete observations across nine variables.
+
+| Variable | Type | Description |
+|---|---|---|
+| `id` | ID | Subject identifier |
+| `cad` | Categorical | Coronary artery disease status: `no cad`, `cad` |
+| `sbp` | Continuous | Systolic blood pressure (mmHg) |
+| `dbp` | Continuous | Diastolic blood pressure (mmHg) |
+| `chol` | Continuous | Total cholesterol (mmol/L) — **outcome** |
+| `age` | Continuous | Age (years) |
+| `bmi` | Continuous | Body mass index (kg/m²) |
+| `race` | Categorical | Ethnicity: `malay`, `chinese`, `indian` |
+| `gender` | Categorical | `woman`, `man` |
+
+```{r load-data}
+# Load data — adjust path if needed
+coronaryNA <- read_csv("coronaryNA.csv")
+
+# Remove missing observations
+coronary <- na.omit(coronaryNA)
+
+cat("Rows after removing missing values:", nrow(coronary), "\n")
+glimpse(coronary)
+```
+
+## Exploratory data analysis
+
+The pairs plot shows histograms on the diagonal, scatter plots with smoothers
+below, and Pearson correlations above. Focus on the `chol` row/column to
+identify potential predictors.
+
+```{r pairs-plot, fig.height=7, fig.width=8}
+GGally::ggpairs(
+  coronary %>% select(-id, -cad),
+  progress = FALSE,
+  upper = list(continuous = wrap("cor", size = 3.5)),
+  lower = list(continuous = wrap("smooth", alpha = 0.3, size = 0.5)),
+  diag  = list(continuous = wrap("barDiag", bins = 12))
+) +
+  theme_minimal(base_size = 11) +
+  labs(title = "Pairs plot — coronary dataset")
+```
+
+```{r descriptives}
+# Descriptive statistics by race for the outcome
+coronary %>%
+  group_by(race) %>%
+  summarise(
+    n    = n(),
+    mean_chol = round(mean(chol), 3),
+    sd_chol   = round(sd(chol),   3),
+    median    = round(median(chol), 3),
+    IQR       = round(IQR(chol), 3)
+  )
+```
+
+---
+
+# One-way ANOVA
+
+## Research question
+
+Does mean total cholesterol differ across ethnic groups (Malay, Chinese, Indian)?
+
+**Hypotheses:**
+
+- H₀: μ_chinese = μ_indian = μ_malay
+- H₁: At least one group mean differs
+
+## Visualise
+
+```{r oneway-plot}
+ggplot(coronary, aes(x = race, y = chol, fill = race)) +
+  geom_boxplot(alpha = 0.7, width = 0.5, outlier.shape = 21) +
+  geom_jitter(width = 0.12, alpha = 0.4, size = 1.5) +
+  scale_fill_manual(values = c(
+    "chinese" = "#5DCAA5", "indian" = "#F0997B", "malay" = "#FAC775")) +
+  labs(title = "Total cholesterol by ethnicity",
+       x = NULL, y = "Cholesterol (mmol/L)") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+## Fit the model
+
+In R, ANOVA is fitted as a linear model using `lm()`. This is intentional — it
+reinforces that ANOVA is a special case of linear regression.
+
+```{r oneway-fit}
+fit_anova <- lm(chol ~ race, data = coronary)
+anova(fit_anova)
+```
+
+> **Interpretation:** F(2, 61) = 5.74, p = 0.005. There is a statistically
+> significant effect of ethnicity on cholesterol. At least one group differs.
+> We proceed to post-hoc pairwise comparisons.
+
+## Post-hoc — Tukey HSD via emmeans
+
+```{r oneway-posthoc}
+emm <- emmeans(fit_anova, ~ race)
+emm                    # estimated marginal means
+pairs(emm)             # Tukey-adjusted pairwise comparisons
+```
+
+```{r oneway-emmplot, fig.height=3.5}
+plot(emm, comparisons = TRUE) +
+  labs(title = "Estimated marginal means with Tukey comparisons",
+       x = "Cholesterol (mmol/L)", y = NULL) +
+  theme_minimal(base_size = 12)
+```
+
+> **Post-hoc results:**
+>
+> - Chinese vs Indian: estimate = −1.03 mmol/L, p = 0.010 — significant
+> - Chinese vs Malay: estimate = −0.21 mmol/L, p = 0.80 — not significant
+> - Indian vs Malay: estimate = +0.82 mmol/L, p = 0.022 — significant
+>
+> Indian participants have significantly higher cholesterol than both Chinese
+> and Malay participants.
+
+## Assumption checks
+
+```{r oneway-assumptions, fig.height=4}
+# 1. Normality per group (Shapiro-Wilk)
+coronary %>%
+  group_by(race) %>%
+  summarise(W = round(shapiro.test(chol)$statistic, 4),
+            p = round(shapiro.test(chol)$p.value,   4))
+```
+
+```{r oneway-qq, fig.height=3.5}
+# Q-Q plot of residuals
+ggqqplot(residuals(fit_anova),
+         title = "Q-Q plot — residuals from one-way ANOVA")
+```
+
+```{r oneway-levene}
+# 2. Homogeneity of variance
+leveneTest(chol ~ race, data = coronary)
+```
+
+---
+
+# Two-way ANOVA
+
+## Adding gender as a second factor
+
+We extend the model to test both ethnicity and gender simultaneously, first
+assuming their effects are **additive** (no interaction).
+
+```{r twoway-fit}
+fit_2anova <- lm(chol ~ race + gender, data = coronary)
+anova(fit_2anova)
+```
+
+> **Results:**
+>
+> - Race: F(2, 60) = 5.65, p = 0.006 — significant
+> - Gender: F(1, 60) = 0.009, p = 0.923 — not significant
+>
+> Ethnicity remains a significant predictor. After adjusting for ethnicity,
+> gender does not explain additional variation in cholesterol.
+
+## Two-way ANOVA with interaction
+
+The additive model assumes the effect of race is identical for men and women.
+We test this assumption explicitly by including an interaction term `race * gender`.
+
+```{r interaction-fit}
+fit_interaction <- lm(chol ~ race * gender, data = coronary)
+anova(fit_interaction)
+```
+
+```{r interaction-plot, fig.height=4}
+# Visualise potential interaction
+coronary %>%
+  group_by(race, gender) %>%
+  summarise(mean_chol = mean(chol), se = sd(chol)/sqrt(n()), .groups = "drop") %>%
+  ggplot(aes(x = race, y = mean_chol,
+             colour = gender, group = gender)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mean_chol - se, ymax = mean_chol + se),
+                width = 0.1) +
+  scale_colour_manual(values = c("man" = "#378ADD", "woman" = "#D85A30")) +
+  labs(title    = "Interaction plot — race × gender on cholesterol",
+       subtitle = "Parallel lines suggest no interaction",
+       x = NULL, y = "Mean cholesterol (mmol/L)", colour = NULL) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom")
+```
+
+> **Interaction term:** Race × Gender F(2, 58) = 2.30, p = 0.109 — not
+> significant. The effect of ethnicity on cholesterol does not significantly
+> differ between men and women. The additive model `chol ~ race + gender` is
+> preferred by parsimony.
+
+## Model assumption diagnostics — ggplot2
+
+```{r diag-plots, fig.height=6}
+# Extract diagnostics using broom
+diag_df <- augment(fit_interaction)
+
+p1 <- ggplot(diag_df, aes(.fitted, .resid)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "gray50") +
+  geom_point(alpha = 0.5) +
+  geom_smooth(se = FALSE, colour = "#D85A30", linewidth = 0.8) +
+  labs(title = "Residuals vs fitted", x = "Fitted values", y = "Residuals") +
+  theme_minimal(base_size = 12)
+
+p2 <- ggqqplot(diag_df$.resid, title = "Normal Q-Q — residuals")
+
+p3 <- ggplot(diag_df, aes(.fitted, sqrt(abs(.std.resid)))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(se = FALSE, colour = "#D85A30", linewidth = 0.8) +
+  labs(title = "Scale-location", x = "Fitted values",
+       y = expression(sqrt("|Std. residuals|"))) +
+  theme_minimal(base_size = 12)
+
+p4 <- ggplot(diag_df, aes(seq_along(.cooksd), .cooksd)) +
+  geom_col(fill = "#378ADD", alpha = 0.7) +
+  geom_hline(yintercept = 4 / nrow(coronary), linetype = "dashed",
+             colour = "#D85A30") +
+  labs(title = "Cook's distance", x = "Observation index",
+       y = "Cook's D") +
+  theme_minimal(base_size = 12)
+
+gridExtra::grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+> **Diagnostic summary:**
+>
+> - Residuals vs Fitted: points scatter randomly around zero — linearity OK
+> - Q-Q plot: points follow the line closely — normality of residuals satisfied
+> - Scale-location: roughly horizontal band — homoscedasticity OK
+> - Cook's distance: no observation exceeds the 4/n threshold — no influential outliers
+
+---
+
+# Simple linear regression
+
+Before building a multiple regression model, we examine the relationship
+between a single continuous predictor and cholesterol.
+
+## Research question
+
+Does diastolic blood pressure (DBP) predict total cholesterol?
+
+**Hypotheses:**
+
+- H₀: β_dbp = 0 (DBP has no linear association with cholesterol)
+- H₁: β_dbp ≠ 0
+
+## Visualise
+
+```{r slr-plot}
+ggplot(coronary, aes(x = dbp, y = chol)) +
+  geom_point(alpha = 0.5, colour = "#378ADD", size = 2) +
+  geom_smooth(method = "lm", colour = "#D85A30", se = TRUE, linewidth = 1) +
+  labs(title    = "Simple linear regression — DBP predicting cholesterol",
+       subtitle = "Shaded band = 95% confidence interval for the mean",
+       x = "Diastolic blood pressure (mmHg)",
+       y = "Total cholesterol (mmol/L)") +
+  theme_minimal(base_size = 13)
+```
+
+## Fit the model
+
+```{r slr-fit}
+fit_slr <- lm(chol ~ dbp, data = coronary)
+summary(fit_slr)
+```
+
+```{r slr-tidy}
+tidy(fit_slr, conf.int = TRUE) %>%
+  mutate(across(where(is.numeric), ~ round(., 4)))
+```
+
+> **Interpretation:**
+>
+> - Intercept: predicted cholesterol when DBP = 0 (not clinically meaningful
+>   here but retained for model validity)
+> - β_dbp: for each 1 mmHg increase in DBP, cholesterol increases by β mmol/L
+> - R²: DBP alone explains a modest proportion of cholesterol variability
+> - Check p-value for β_dbp to assess statistical significance
+
+## Confidence intervals vs. prediction intervals
+
+```{r slr-intervals}
+# New DBP values for prediction
+new_dbp <- data.frame(dbp = seq(min(coronary$dbp),
+                                 max(coronary$dbp), length.out = 100))
+
+# 95% CI for the mean response (narrower — for the average patient)
+ci <- predict(fit_slr, newdata = new_dbp, interval = "confidence")
+
+# 95% PI for an individual new observation (wider — for a single patient)
+pi <- predict(fit_slr, newdata = new_dbp, interval = "prediction")
+
+pred_df <- bind_cols(
+  new_dbp,
+  as.data.frame(ci) %>% rename(fit = fit, ci_lwr = lwr, ci_upr = upr),
+  as.data.frame(pi) %>% dplyr::select(pi_lwr = lwr, pi_upr = upr)
+)
+
+ggplot(pred_df, aes(x = dbp)) +
+  geom_ribbon(aes(ymin = pi_lwr, ymax = pi_upr),
+              fill = "#B5D4F4", alpha = 0.4) +
+  geom_ribbon(aes(ymin = ci_lwr, ymax = ci_upr),
+              fill = "#378ADD", alpha = 0.4) +
+  geom_line(aes(y = fit), colour = "#D85A30", linewidth = 1.2) +
+  geom_point(data = coronary, aes(x = dbp, y = chol),
+             alpha = 0.4, size = 1.5) +
+  labs(title    = "Confidence interval vs. prediction interval",
+       subtitle = "Dark band = 95% CI for mean response · Light band = 95% PI for individual",
+       x = "DBP (mmHg)", y = "Cholesterol (mmol/L)") +
+  theme_minimal(base_size = 13)
+```
+
+> **Key distinction:**
+>
+> - The **confidence interval** (dark band) quantifies uncertainty about the
+>   *mean* cholesterol at a given DBP — relevant for population estimates
+> - The **prediction interval** (light band) quantifies uncertainty for a
+>   *single new patient* — always wider because it includes individual variation
+
+## Assumption checks — SLR
+
+```{r slr-assumptions, fig.height=3.5}
+# Residuals vs fitted
+augment(fit_slr) %>%
+  ggplot(aes(.fitted, .resid)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "gray50") +
+  geom_point(alpha = 0.6, colour = "#378ADD") +
+  geom_smooth(se = FALSE, colour = "#D85A30", linewidth = 0.8) +
+  labs(title = "Residuals vs fitted — SLR",
+       x = "Fitted values", y = "Residuals") +
+  theme_minimal(base_size = 13)
+```
+
+```{r slr-shapiro}
+shapiro.test(residuals(fit_slr))
+```
+
+---
+
+# Multiple linear regression
+
+## Variable selection — backward stepwise
+
+We begin with a full model including all plausible clinical predictors.
+Backward stepwise selection uses the **Akaike Information Criterion (AIC)**
+to iteratively remove variables that do not improve model fit.
+
+> **AIC** balances goodness of fit against model complexity.
+> Lower AIC = better model. Removing a variable is preferred if it reduces AIC.
+> AIC is for variable selection — not hypothesis testing.
+
+```{r mlr-full}
+mlr_full <- lm(chol ~ dbp + bmi + race + age + gender, data = coronary)
+summary(mlr_full)
+```
+
+```{r mlr-backward}
+mlr_step <- step(mlr_full, direction = "backward", trace = 1)
+```
+
+> After backward selection, the model `chol ~ dbp + race` achieves the lowest
+> AIC. Combined with clinical reasoning, this is adopted as the final model.
+
+## Fit the final model
+
+```{r mlr-final}
+mlr_final <- lm(chol ~ dbp + race, data = coronary)
+summary(mlr_final)
+```
+
+```{r mlr-tidy}
+tidy(mlr_final, conf.int = TRUE) %>%
+  mutate(across(where(is.numeric), ~ round(., 4)))
+```
+
+> **Coefficient interpretation (reference group = Chinese):**
+>
+> - **Intercept:** predicted cholesterol for a Chinese patient with DBP = 0
+>   (not clinically meaningful; needed mathematically)
+> - **β_dbp:** for each 1 mmHg increase in DBP, cholesterol increases by
+>   0.033 mmol/L, *holding race constant*. p = 0.06 — borderline.
+> - **β_raceindian:** Indian patients have 0.88 mmol/L higher cholesterol
+>   than Chinese patients, *adjusting for DBP*. p = 0.011 — significant.
+> - **β_racemalay:** Malay patients have 0.26 mmol/L higher cholesterol
+>   than Chinese patients. p = 0.40 — not significant.
+>
+> **Model fit:** R² = 0.206 (20.6% of variance explained);
+> Adjusted R² = 0.166. The overall model is significant (F(3, 60) = 5.20,
+> p = 0.003).
+
+## Multicollinearity — Variance Inflation Factor (VIF)
+
+When predictors are correlated with each other, coefficient estimates become
+unstable. VIF quantifies how much variance of each coefficient is inflated
+due to collinearity.
+
+- VIF = 1: no collinearity
+- VIF 1–5: moderate, acceptable
+- VIF > 5–10: high — investigate
+- VIF > 10: severe — action required
+
+```{r vif}
+vif(mlr_final)
+```
+
+> VIF values close to 1 for all predictors indicate no problematic
+> multicollinearity in the final model.
+
+
+## Assumption checks — MLR
+
+```{r mlr-diag, fig.height=6}
+diag_mlr <- augment(mlr_final)
+
+p1 <- ggplot(diag_mlr, aes(.fitted, .resid)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "gray50") +
+  geom_point(alpha = 0.5) +
+  geom_smooth(se = FALSE, colour = "#D85A30", linewidth = 0.8) +
+  labs(title = "Residuals vs fitted", x = "Fitted", y = "Residuals") +
+  theme_minimal(base_size = 12)
+
+p2 <- ggqqplot(diag_mlr$.resid, title = "Normal Q-Q — residuals")
+
+p3 <- ggplot(diag_mlr, aes(.fitted, sqrt(abs(.std.resid)))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(se = FALSE, colour = "#D85A30", linewidth = 0.8) +
+  labs(title = "Scale-location", x = "Fitted",
+       y = expression(sqrt("|Std. residuals|"))) +
+  theme_minimal(base_size = 12)
+
+p4 <- ggplot(diag_mlr, aes(seq_along(.cooksd), .cooksd)) +
+  geom_col(fill = "#378ADD", alpha = 0.7) +
+  geom_hline(yintercept = 4 / nrow(coronary),
+             linetype = "dashed", colour = "#D85A30") +
+  annotate("text", x = 5, y = 4 / nrow(coronary) + 0.005,
+           label = "4/n threshold", colour = "#D85A30", size = 3, hjust = 0) +
+  labs(title = "Cook's distance", x = "Index", y = "Cook's D") +
+  theme_minimal(base_size = 12)
+
+gridExtra::grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+```{r mlr-shapiro}
+shapiro.test(residuals(mlr_final))
+```
+
+> **Diagnostic checklist:**
+>
+> - Linearity: residuals scatter randomly around zero ✔
+> - Normality of residuals: Shapiro-Wilk p > 0.05; Q-Q plot satisfactory ✔
+> - Homoscedasticity: scale-location plot shows roughly constant spread ✔
+> - Influential observations: no Cook's D exceeds 4/n threshold ✔
+> - Multicollinearity: VIF < 5 for all predictors ✔
+
+## Visualise the final model predictions
+
+```{r mlr-pred-plot}
+coronary %>%
+  mutate(fitted = fitted(mlr_final)) %>%
+  ggplot(aes(x = dbp, y = chol, colour = race)) +
+  geom_point(alpha = 0.5, size = 2) +
+  geom_line(aes(y = fitted), linewidth = 1.1) +
+  scale_colour_manual(values = c(
+    "chinese" = "#1D9E75", "indian" = "#D85A30", "malay" = "#378ADD")) +
+  labs(title    = "Final MLR model — fitted lines by ethnicity",
+       subtitle = "Parallel lines reflect the additive (no interaction) model",
+       x = "DBP (mmHg)", y = "Cholesterol (mmol/L)", colour = "Ethnicity") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom")
+```
+
+> Parallel lines confirm the additive assumption: each ethnic group has its
+> own intercept (reflecting group differences in baseline cholesterol) but the
+> same slope for DBP.
+
+---
+
+# Reporting a linear model
+
+A well-reported linear regression result includes:
+
+1. The regression equation or coefficient table with 95% CIs
+2. Overall model significance (F-statistic, df, p-value)
+3. R² and adjusted R²
+4. Assumption check results
+5. Interpretation in clinical terms — not just statistical terms
+
+**Example write-up for the final model:**
+
+> Multiple linear regression was used to examine predictors of total
+> cholesterol. After backward stepwise selection, the final model included
+> diastolic blood pressure and ethnicity as predictors. The model was
+> statistically significant (F(3, 60) = 5.20, p = 0.003) and explained 20.6%
+> of the variance in cholesterol (adjusted R² = 0.166). After adjusting for
+> DBP, Indian participants had significantly higher cholesterol than Chinese
+> participants (β = 0.88, 95% CI [0.22, 1.55], p = 0.011). DBP showed a
+> positive but borderline association with cholesterol (β = 0.033,
+> 95% CI [−0.001, 0.067], p = 0.06). Regression assumptions were verified:
+> residuals were approximately normally distributed (Shapiro-Wilk p > 0.05),
+> homoscedasticity was confirmed visually, and VIF values indicated no
+> multicollinearity.
+
+---
+
+# Exercises
+
+**Exercise 1 — One-way ANOVA**
+Fit a one-way ANOVA testing whether mean SBP differs by ethnicity. Check
+assumptions, report the F-statistic and p-value, and run post-hoc comparisons
+if warranted.
+
+```{r ex1, eval=FALSE}
+# Your code here
+
+```
+
+**Exercise 2 — Two-way ANOVA with interaction**
+Fit a two-way ANOVA for SBP with race and gender, including the interaction
+term. Produce an interaction plot. Is the interaction significant? What does
+this mean clinically?
+
+```{r ex2, eval=FALSE}
+# Your code here
+
+```
+
+**Exercise 3 — Simple linear regression**
+Fit a simple linear regression of cholesterol on age. Plot the regression
+line with confidence and prediction intervals. Interpret the slope and R².
+
+```{r ex3, eval=FALSE}
+# Your code here
+
+```
+
+**Exercise 4 — Multiple linear regression**
+Fit a full MLR model predicting SBP from age, BMI, gender, and race. Perform
+backward stepwise selection. Check VIF on the final model. Report the final
+model coefficients with 95% CIs.
+
+```{r ex4, eval=FALSE}
+# Your code here
+
+```
+
+---
+
+# Session info
+
+```{r session}
+sessionInfo()
+```

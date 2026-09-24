@@ -1,0 +1,429 @@
+---
+title: "Confidence Intervals"
+author: ''
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    df_print: paged
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+    number_sections: true
+subtitle: "Fundamentals of Biostatistics — Hands-on Session"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,  fig.width  = 5,
+  fig.height = 5,
+  fig.align  = "center")
+```
+
+---
+
+# Setup
+
+```{r packages}
+if (!require(ggplot2)) install.packages("ggplot2")
+if (!require(dplyr))   install.packages("dplyr")
+if (!require(tidyr))   install.packages("tidyr")
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+```
+
+---
+
+# What is a confidence interval?
+
+A confidence interval (CI) gives a range of plausible values for a population
+parameter, based on sample data.
+
+> **Correct interpretation:** If we repeated this study many times and computed
+> a 95% CI each time, 95% of those intervals would contain the true parameter.
+
+> **Common misinterpretation:** "There is a 95% probability that the true
+> parameter lies in this specific interval." — This is **wrong**. The parameter
+> is fixed; it either is or is not in the interval. Probability applies to the
+> *procedure*, not to a single computed interval.
+
+## The general form
+
+$$\text{CI} = \text{point estimate} \pm z^* \times SE$$
+
+Where:
+
+- **Point estimate** — sample statistic (x̄ or p̂)
+- **z*** — critical value from the standard normal (1.96 for 95%)
+- **SE** — standard error, measuring sampling variability
+
+---
+
+# Simulating the "95% of intervals" interpretation
+
+The best way to understand what 95% confidence means is to simulate it.
+We draw 100 samples from a known population and compute a CI from each.
+
+```{r simulation}
+set.seed(42)
+
+# True population parameters (known in simulation, unknown in practice)
+mu_true <- 120      # true mean SBP (mmHg)
+sigma   <- 15       # true SD
+n       <- 40       # sample size per study
+n_sims  <- 100      # number of simulated studies
+
+# Draw 100 samples and compute 95% CI for each
+sims <- data.frame(sim = 1:n_sims) %>%
+  rowwise() %>%
+  mutate(
+    xbar  = mean(rnorm(n, mean = mu_true, sd = sigma)),
+    se    = sigma / sqrt(n),
+    lower = xbar - 1.96 * se,
+    upper = xbar + 1.96 * se,
+    captures = (lower <= mu_true & mu_true <= upper)
+  ) %>%
+  ungroup()
+
+n_captured <- sum(sims$captures)
+cat("Number of intervals capturing the true mean:", n_captured, "out of", n_sims, "\n")
+cat("Coverage:", round(n_captured / n_sims * 100, 1), "%\n")
+```
+
+```{r simulation-plot, fig.height=9}
+ggplot(sims, aes(x = sim, y = xbar, colour = captures)) +
+  geom_hline(yintercept = mu_true, linetype = "dashed",
+             colour = "gray40", linewidth = 0.8) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0, linewidth = 0.6) +
+  geom_point(size = 1.5) +
+  scale_colour_manual(
+    values = c("TRUE" = "#1D9E75", "FALSE" = "#D85A30"),
+    labels = c("TRUE" = "Contains true mean", "FALSE" = "Misses true mean")
+  ) +
+  coord_flip() +
+  labs(
+    title    = "100 simulated 95% confidence intervals",
+    subtitle = paste0("True mean = ", mu_true, " mmHg  ·  n = ", n,
+                      " per study  ·  ", n_captured, "/100 intervals capture the true mean"),
+    x        = "Simulation",
+    y        = "SBP (mmHg)",
+    colour   = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+> **Notice:** The true mean (dashed line) is fixed. The intervals move around it.
+> Roughly 5 intervals miss — exactly what 95% confidence predicts.
+
+---
+
+# CI for a mean — known σ (z-interval)
+
+Used when the population standard deviation σ is known, or n is large (n > 30).
+
+$$\bar{x} \pm z^* \cdot \frac{\sigma}{\sqrt{n}}$$
+
+## Critical values for common confidence levels
+
+```{r critical-values}
+conf_levels <- c(0.90, 0.95, 0.99)
+z_stars     <- qnorm(1 - (1 - conf_levels) / 2)
+
+data.frame(
+  `Confidence level` = paste0(conf_levels * 100, "%"),
+  `α`                = 1 - conf_levels,
+  `α/2`              = (1 - conf_levels) / 2,
+  `z*`               = round(z_stars, 3)
+)
+```
+
+## Worked example
+
+```{r z-interval}
+# Sample data
+x_bar <- 124.3    # sample mean SBP (mmHg)
+sigma <- 15       # known population SD
+n     <- 40       # sample size
+
+se <- sigma / sqrt(n)
+cat("Standard error (SE):", round(se, 3), "mmHg\n\n")
+
+for (cl in c(0.90, 0.95, 0.99)) {
+  z_star <- qnorm(1 - (1 - cl) / 2)
+  lower  <- x_bar - z_star * se
+  upper  <- x_bar + z_star * se
+  cat(cl * 100, "% CI: [", round(lower, 1), ",", round(upper, 1), "]\n")
+}
+```
+
+```{r ci-width-plot}
+# Visualise how CI width grows with confidence level
+cl_seq <- seq(0.80, 0.99, by = 0.001)
+widths <- data.frame(
+  conf  = cl_seq,
+  width = 2 * qnorm(1 - (1 - cl_seq) / 2) * (sigma / sqrt(n))
+)
+
+ggplot(widths, aes(x = conf * 100, y = width)) +
+  geom_line(colour = "#378ADD", linewidth = 1.2) +
+  geom_vline(xintercept = 95, linetype = "dashed", colour = "#D85A30") +
+  annotate("text", x = 95.5, y = min(widths$width) + 1,
+           label = "95%", colour = "#D85A30", size = 3.5, hjust = 0) +
+  labs(
+    title    = "CI width increases with confidence level",
+    subtitle = paste0("σ = ", sigma, "  ·  n = ", n),
+    x        = "Confidence level (%)",
+    y        = "CI width (mmHg)"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+> **Key insight:** Higher confidence comes at the cost of a wider — less precise — interval.
+
+---
+
+# CI for a mean — unknown σ (t-interval)
+
+In practice, σ is rarely known. We estimate it with the sample SD s and use
+the t-distribution, which has heavier tails to account for the added uncertainty.
+
+$$\bar{x} \pm t^*_{n-1} \cdot \frac{s}{\sqrt{n}}$$
+
+The t-distribution converges to the normal as n increases — for n > 30 the
+difference is negligible.
+
+## t vs z critical values
+
+```{r t-vs-z}
+ns <- c(5, 10, 20, 30, 50, 100, 500)
+
+comparison <- data.frame(
+  n      = ns,
+  df     = ns - 1,
+  t_star = round(qt(0.975, df = ns - 1), 3),
+  z_star = 1.960
+)
+
+print(comparison)
+```
+
+```{r t-vs-z-plot}
+n_seq <- 2:100
+df_seq <- n_seq - 1
+
+tvals <- data.frame(
+  n      = n_seq,
+  t_star = qt(0.975, df = df_seq),
+  z_star = 1.96
+)
+
+ggplot(tvals, aes(x = n)) +
+  geom_line(aes(y = t_star, colour = "t*"), linewidth = 1.1) +
+  geom_hline(aes(yintercept = 1.96, colour = "z* = 1.96"),
+             linetype = "dashed", linewidth = 1) +
+  scale_colour_manual(
+    values = c("t*" = "#378ADD", "z* = 1.96" = "#D85A30"),
+    name   = NULL
+  ) +
+  labs(
+    title    = "t* converges to z* = 1.96 as n increases",
+    subtitle = "95% confidence level",
+    x        = "Sample size (n)",
+    y        = "Critical value"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom")
+```
+
+## Worked example using t.test()
+
+```{r t-interval}
+set.seed(7)
+sbp_sample <- rnorm(25, mean = 124, sd = 16)   # simulated sample of 25 patients
+
+# Summary statistics
+cat("n   =", length(sbp_sample), "\n")
+cat("x̄   =", round(mean(sbp_sample), 2), "mmHg\n")
+cat("s   =", round(sd(sbp_sample), 2),   "mmHg\n")
+cat("SE  =", round(sd(sbp_sample) / sqrt(length(sbp_sample)), 2), "mmHg\n\n")
+
+# 95% CI using t.test
+result <- t.test(sbp_sample, conf.level = 0.95)
+cat("95% CI: [",
+    round(result$conf.int[1], 1), ",",
+    round(result$conf.int[2], 1), "] mmHg\n")
+```
+
+---
+
+# CI for a proportion
+
+When the outcome is binary (yes/no, event/no event), we estimate a proportion p̂
+and construct a CI around it.
+
+$$\hat{p} \pm z^* \sqrt{\frac{\hat{p}(1-\hat{p})}{n}}$$
+
+Valid when n·p̂ ≥ 5 and n·(1−p̂) ≥ 5 (normal approximation holds).
+
+## Worked example
+
+```{r prop-ci}
+x <- 87     # number of events (e.g., patients who responded)
+n <- 250    # total sample size
+
+p_hat <- x / n
+se_p  <- sqrt(p_hat * (1 - p_hat) / n)
+z_star <- qnorm(0.975)
+
+lower <- p_hat - z_star * se_p
+upper <- p_hat + z_star * se_p
+
+cat("p̂  =", round(p_hat, 3), "\n")
+cat("SE =", round(se_p, 4),  "\n")
+cat("95% CI: [", round(lower, 3), ",", round(upper, 3), "]\n")
+cat("95% CI: [",
+    paste0(round(lower * 100, 1), "%"), ",",
+    paste0(round(upper * 100, 1), "%"), "]\n")
+
+# Using prop.test for comparison (continuity-corrected)
+prop.test(x, n, conf.level = 0.95)
+```
+
+## How CI width varies with p̂
+
+```{r prop-ci-width}
+p_seq <- seq(0.01, 0.99, by = 0.01)
+n_vals <- c(50, 100, 250, 500)
+
+prop_widths <- expand.grid(p = p_seq, n = n_vals) %>%
+  mutate(
+    se    = sqrt(p * (1 - p) / n),
+    width = 2 * 1.96 * se
+  )
+
+ggplot(prop_widths, aes(x = p, y = width, colour = factor(n), group = factor(n))) +
+  geom_line(linewidth = 1) +
+  scale_colour_manual(
+    values = c("50"  = "#D85A30", "100" = "#BA7517",
+               "250" = "#378ADD", "500" = "#1D9E75"),
+    name   = "n"
+  ) +
+  labs(
+    title    = "CI width for a proportion",
+    subtitle = "95% confidence level — width maximised at p̂ = 0.5",
+    x        = "Estimated proportion (p̂)",
+    y        = "CI width"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "right")
+```
+
+> **Key insight:** CI width is maximised when p̂ = 0.5. This is why sample size
+> formulas for proportions use p = 0.5 as the conservative default.
+
+---
+
+# What affects CI width?
+
+Three factors control how wide your interval is:
+
+```{r width-factors}
+# Base scenario
+n_base     <- 100
+sigma_base <- 15
+z_base     <- qnorm(0.975)   # 95% CI
+
+base_width <- 2 * z_base * sigma_base / sqrt(n_base)
+cat("Base CI width (n=100, σ=15, 95%):", round(base_width, 2), "mmHg\n\n")
+
+# Factor 1: double n
+w_2n <- 2 * z_base * sigma_base / sqrt(200)
+cat("Double n (n=200):          width =", round(w_2n, 2),
+    " | reduction:", round((1 - w_2n / base_width) * 100, 0), "%\n")
+
+# Factor 2: double σ
+w_2s <- 2 * z_base * (sigma_base * 2) / sqrt(n_base)
+cat("Double σ (σ=30):           width =", round(w_2s, 2),
+    " | increase: ", round((w_2s / base_width - 1) * 100, 0), "%\n")
+
+# Factor 3: increase to 99% CI
+w_99 <- 2 * qnorm(0.995) * sigma_base / sqrt(n_base)
+cat("99% CI (z*=2.576):         width =", round(w_99, 2),
+    " | increase: ", round((w_99 / base_width - 1) * 100, 0), "%\n")
+```
+
+```{r width-summary-plot}
+scenarios <- data.frame(
+  scenario = c("Base\n(n=100, σ=15, 95%)",
+               "Double n\n(n=200)",
+               "Double σ\n(σ=30)",
+               "99% CI\n(z*=2.576)"),
+  width = c(base_width, w_2n, w_2s, w_99),
+  group = c("base", "n", "sigma", "conf")
+)
+
+ggplot(scenarios, aes(x = reorder(scenario, width), y = width,
+                      fill = group)) +
+  geom_col(width = 0.6, alpha = 0.85) +
+  geom_text(aes(label = round(width, 1)), hjust = -0.2, size = 4) +
+  scale_fill_manual(
+    values = c("base"  = "#888780", "n"     = "#1D9E75",
+               "sigma" = "#D85A30", "conf"  = "#378ADD")
+  ) +
+  coord_flip() +
+  ylim(0, max(scenarios$width) * 1.15) +
+  labs(
+    title = "Effect of each factor on CI width",
+    x     = NULL,
+    y     = "CI width (mmHg)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+
+---
+
+# Exercises
+
+**Exercise 1.**
+A sample of 36 patients has a mean resting heart rate of 74 bpm with a known
+population SD of 10 bpm. Construct 90%, 95%, and 99% confidence intervals.
+Interpret the 95% interval in one sentence.
+
+```{r ex1, eval=FALSE}
+# Your code here
+
+```
+
+**Exercise 2.**
+In a clinical trial of 180 patients, 54 experienced a side effect. Compute
+the 95% CI for the true proportion experiencing the side effect. Check that
+the normal approximation conditions are met.
+
+```{r ex2, eval=FALSE}
+# Your code here
+
+```
+
+**Exercise 3.**
+Reproduce the simulation from Section 2 but change n to 15. How does the
+coverage change, and why? What happens if you use z* = 1.96 instead of t*?
+
+```{r ex3, eval=FALSE}
+# Your code here
+
+```
+
+
+---
+
+# Session info
+
+```{r session}
+sessionInfo()
+```

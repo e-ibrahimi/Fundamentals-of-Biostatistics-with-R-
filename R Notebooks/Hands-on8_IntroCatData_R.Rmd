@@ -1,0 +1,226 @@
+---
+title: "Categorical Data Analysis"
+author: "Statistical Methods in R"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: '3'
+    df_print: paged
+  html_notebook:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    highlight: tango
+subtitle: "Relative Risk, Odds Ratio, Chi-Square, Fisher's Exact Test & Goodness-of-Fit"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  comment = "#>",
+  fig.width  = 7,
+  fig.height = 5
+)
+```
+
+---
+
+# Overview
+
+This notebook covers the core methods for analyzing **categorical data** — data that takes a limited set of discrete values (categories) rather than continuous measurements. We focus on:
+
+| Method | Purpose |
+|---|---|
+| Relative Risk (RR) | Compare risk of an outcome between two groups |
+| Odds Ratio (OR) | Compare odds of an outcome between two groups |
+| Chi-Square Test for Independence | Test association between two categorical variables |
+| Fisher's Exact Test | Exact test for small samples / sparse tables |
+| Chi-Square Goodness-of-Fit | Test whether data follows a hypothesized distribution |
+
+**No regression models are included** — these topics are covered in a separate notebook.
+
+---
+
+# Setup
+
+```{r packages}
+# Install packages if not already available
+if (!requireNamespace("epitools",  quietly = TRUE)) install.packages("epitools")
+if (!requireNamespace("vcd",       quietly = TRUE)) install.packages("vcd")
+if (!requireNamespace("ggplot2",   quietly = TRUE)) install.packages("ggplot2")
+if (!requireNamespace("dplyr",     quietly = TRUE)) install.packages("dplyr")
+if (!requireNamespace("knitr",     quietly = TRUE)) install.packages("knitr")
+
+library(epitools)   # riskratio(), oddsratio()
+library(vcd)        # mosaic plots, assocstats()
+library(ggplot2)    # visualizations
+library(dplyr)      # data manipulation
+library(knitr)      # kable() for nice tables
+```
+
+---
+
+# The Study Scenario
+
+Throughout this notebook we use a simulated **cohort study** examining the association between **smoking status** and **lung disease diagnosis** among 300 participants.
+
+```{r dataset}
+# ── Simulated data ────────────────────────────────────────────────────────────
+set.seed(42)
+n <- 300
+
+smoking <- sample(c("Smoker", "Non-smoker"), n,
+                  replace = TRUE, prob = c(0.45, 0.55))
+
+# Disease probability: higher in smokers
+p_disease <- ifelse(smoking == "Smoker", 0.40, 0.10)
+disease    <- rbinom(n, 1, p_disease)
+disease    <- factor(disease, levels = c(1, 0),
+                     labels = c("Disease", "No Disease"))
+smoking    <- factor(smoking, levels = c("Smoker", "Non-smoker"))
+
+study_data <- data.frame(smoking, disease)
+
+head(study_data, 10)
+```
+
+```{r summary-table}
+# Frequency table
+tab <- table(Smoking = study_data$smoking,
+             Disease = study_data$disease)
+
+tab
+```
+
+```{r proportions}
+# Row proportions (risk of disease within each group)
+kable(round(prop.table(tab, margin = 1), 3),
+      caption = "Row Proportions (risk within each smoking group)")
+```
+
+---
+
+# Chi-Square Test for Independence
+
+## Concept
+
+Tests whether two categorical variables are **statistically independent** — i.e., whether the distribution of one variable differs across levels of the other.
+
+$$H_0: \text{Smoking and disease are independent}$$
+$$H_1: \text{Smoking and disease are associated}$$
+
+**Test statistic:**
+
+$$\chi^2 = \sum_{i,j} \frac{(O_{ij} - E_{ij})^2}{E_{ij}}$$
+
+where $E_{ij} = \frac{(\text{Row total}_i) \times (\text{Col total}_j)}{N}$
+
+**Degrees of freedom:** $(r - 1)(c - 1)$
+
+> **Assumptions:**
+> - Observations are independent
+> - Expected cell counts ≥ 5 in more than 75% (otherwise use Fisher's Exact Test)
+
+
+## Using `chisq.test()`
+
+```{r chi-sq-builtin}
+chi_test <- chisq.test(tab)
+print(chi_test)
+
+chi_test$statistic
+
+# Inspect expected counts
+cat("\nExpected cell counts:\n")
+print(round(chi_test$expected, 2))
+
+# Standardized residuals
+cat("\nStandardized (Pearson) residuals:\n")
+print(round(chi_test$residuals, 3))
+```
+X-squared = 18.245, df = 1, p-value = 1.943e-05, there is a relationship between smoking and disease. 
+
+
+## Visualizing the Association
+
+```{r chi-sq-barplot}
+# Grouped bar chart
+ggplot(study_data, aes(x = smoking, fill = disease)) +
+  geom_bar(position = "dodge")
+```
+
+## Effect Size: Cramér's V
+
+The chi-square statistic depends on sample size. **Cramér's V** standardizes it into a measure of association strength (0 = none, 1 = perfect):
+
+$$V = \sqrt{\frac{\chi^2}{N \cdot \min(r-1,\, c-1)}}$$
+
+```{r cramers-v}
+# Effect size V
+
+assocstats(tab)
+```
+
+---
+
+# Fisher's Exact Test
+
+## Concept
+
+Fisher's Exact Test computes the **exact** probability of observing data as extreme as (or more extreme than) what was observed, under H₀ of independence — without relying on large-sample approximations.
+
+**When to use:**
+- Small samples
+- Any expected cell count < 5
+- As a general-purpose alternative when you want exact p-values
+
+The test is based on the **hypergeometric distribution**:
+
+$$P(\text{table} \mid \text{marginals fixed}) = \frac{\binom{n_1}{a}\binom{n_0}{c}}{\binom{N}{a+c}}$$
+
+## Demonstration with a Sparse Table
+
+```{r fisher-sparse}
+# Small study: new drug vs. placebo, rare side effect
+sparse_tab <- matrix(
+  c(3, 1,   # Drug:    3 with side effect, 1 without
+    0, 9),  # Placebo: 0 with side effect, 9 without
+  nrow = 2, byrow = TRUE,
+  dimnames = list(
+    Treatment = c("Drug", "Placebo"),
+    SideEffect = c("Yes", "No")
+  )
+)
+
+kable(addmargins(sparse_tab),
+      caption = "Sparse 2×2 Table: Drug Trial (n = 13)")
+```
+
+```{r chi-sq-vs-fisher}
+# Check expected counts — chi-square unreliable here
+cat("Expected counts under chi-square:\n")
+print(round(chisq.test(sparse_tab)$expected, 2))
+cat("\nWarning: several expected counts < 5 → use Fisher's Exact Test\n")
+```
+
+```{r fisher-exact}
+fisher_result <- fisher.test(sparse_tab)
+print(fisher_result)
+
+cat(sprintf("\nExact p-value: %.4f\n",       fisher_result$p.value))
+cat(sprintf("Odds Ratio:    %.3f\n",         fisher_result$estimate))
+cat(sprintf("95%% CI:        %.3f – %.3f\n",
+            fisher_result$conf.int[1], fisher_result$conf.int[2]))
+```
+---
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```

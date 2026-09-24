@@ -1,0 +1,574 @@
+---
+title: "Probability Concepts & Distributions"
+author: "Fundamentals of Biostatistics — Short Course"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+  html_notebook:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width  = 8,
+  fig.height = 5,
+  fig.align  = "center"
+)
+```
+
+```{r packages}
+
+# Install any missing packages before loading
+packages <- c("ggplot2", "dplyr", "tidyr", "scales", "patchwork", "knitr", "kableExtra")
+new_packages <- packages[!(packages %in% installed.packages()[,"Package"])]
+
+if (length(new_packages) > 0) {
+  install.packages(new_packages)
+}
+
+lapply(packages, library, character.only = TRUE)
+
+```
+
+---
+
+# Introduction
+
+This notebook accompanies Lecture 4 of the *Fundamentals of Biostatistics* course.
+It provides hands-on R code for the core probability concepts and distributions covered
+in the lecture, and concludes with a detailed Bayes' theorem application in a realistic
+medical research context.
+
+**Topics covered:**
+
+1. Basic probability rules  
+2. The Binomial distribution — clinical trial outcomes  
+3. The Poisson distribution — adverse event surveillance  
+4. The Normal distribution — continuous biological measures  
+5. The Log-Normal distribution — skewed biomarkers  
+6. **Bayes' Theorem** — diagnostic test performance in medical research  
+
+---
+
+# Basic Probability Rules
+
+## Setting up a simple sample space
+
+Suppose we record blood type in a cohort of 500 patients.
+
+```{r basic-prob}
+set.seed(42)
+
+# Simulate blood type frequencies (approximate real-world proportions)
+blood_types <- c("A", "B", "AB", "O")
+probs       <- c(0.42, 0.10, 0.04, 0.44)   # approximate UK/US frequencies
+
+n_patients  <- 500
+cohort      <- sample(blood_types, size = n_patients, replace = TRUE, prob = probs)
+
+# Observed frequencies
+freq_table <- table(cohort)
+prop_table <- prop.table(freq_table)
+
+# Display as a neat table
+data.frame(
+  `Blood Type` = names(prop_table),
+  Count        = as.integer(freq_table),
+  Probability  = round(as.numeric(prop_table), 3)
+) |>
+  kable(caption = "Observed blood type frequencies (n = 500)", align = "lcc") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Applying probability rules
+
+```{r prob-rules}
+p_A  <- prop_table["A"]
+p_B  <- prop_table["B"]
+p_AB <- prop_table["AB"]
+p_O  <- prop_table["O"]
+
+# Addition rule (mutually exclusive events)
+p_A_or_B <- p_A + p_B
+cat("P(Type A or Type B) =", round(p_A_or_B, 3), "\n")
+
+# Complement rule
+p_not_O <- 1 - p_O
+cat("P(NOT Type O)       =", round(p_not_O, 3), "\n")
+
+# Multiplication rule — two independent randomly selected patients
+# both have Type O
+p_both_O <- p_O * p_O
+cat("P(both patients Type O, independently) =", round(p_both_O, 4), "\n")
+```
+
+---
+
+# The Binomial Distribution
+
+## Clinical trial example
+
+A new drug has a reported response rate of **p = 0.30** in the literature.
+We enroll **n = 20** patients in a pilot trial. What is the probability distribution
+of the number of responders?
+
+```{r binomial-setup}
+n <- 20      # patients
+p <- 0.30    # probability of response per patient
+
+# Full probability mass function
+k   <- 0:n
+pmf <- dbinom(k, size = n, prob = p)
+
+binom_df <- data.frame(k = k, probability = pmf)
+
+#Plot it
+
+ggplot(binom_df, aes(x = k, y = probability)) +
+  geom_col(aes(fill = k == 6), width = 0.7, colour = "white") +
+  geom_text(aes(label = ifelse(probability > 0.02, round(probability, 3), "")),
+            vjust = -0.4, size = 3, colour = "grey40") +
+  scale_fill_manual(values = c("FALSE" = "#0E7C86", "TRUE" = "#E07B39"),
+                    guide = "none") +
+  annotate("text", x = 6, y = max(pmf) * 1.05,
+           label = "Mode = 6", colour = "#E07B39", fontface = "bold", size = 4) +
+  labs(
+    title    = "Binomial Distribution: Pilot Trial Responses",
+    subtitle = paste0("Binomial(n = ", n, ", p = ", p, ")  —  Mean = ", n * p,
+                      ",  SD = ", round(sqrt(n * p * (1 - p)), 2)),
+    x = "Number of Responders (k)",
+    y = "P(X = k)"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(colour = "grey40", size = 11),
+    panel.grid.minor = element_blank()
+  )
+
+```
+
+Tasks: Repeat with p = 0.60. How does the distribution shift?
+
+```{r}
+#Your solution here 
+
+
+
+```
+
+
+
+## Key calculations
+
+```{r binomial-calcs}
+# Exact probability of exactly 8 responders
+p_exactly_8 <- dbinom(8, size = n, prob = p)
+cat("P(X = 8)        =", round(p_exactly_8, 4), "\n")
+
+# P(at least 10 responders) — suggestive of a better-than-expected effect
+p_at_least_10 <- pbinom(9, size = n, prob = p, lower.tail = FALSE)
+cat("P(X >= 10)      =", round(p_at_least_10, 4), "\n")
+
+# 95th percentile — what outcome would be surprisingly high?
+q95 <- qbinom(0.95, size = n, prob = p)
+cat("95th percentile =", q95, "responders\n")
+
+
+```
+
+> **Clinical relevance:** If we observed ≥ 10 responders in 20 patients when the
+> true rate is 30%, this would occur only `r scales::percent(p_at_least_10, 0.1)`
+> of the time by chance — a potentially meaningful signal worth further investigation.
+
+---
+
+# The Poisson Distribution
+
+## Adverse event surveillance
+
+A hospital records central-line associated bloodstream infections (CLABSIs).
+Historical data shows a mean rate of **λ = 2.5 infections per month**.
+
+```{r poisson-setup}
+lambda <- 2.5   # mean infections per month
+k_range <- 0:12
+
+poisson_df <- data.frame(
+  k           = k_range,
+  probability = dpois(k_range, lambda = lambda)
+)
+
+#Plot it
+
+ggplot(poisson_df, aes(x = k, y = probability)) +
+  geom_col(aes(fill = k > 6), width = 0.7, colour = "white") +
+  geom_text(aes(label = ifelse(probability > 0.01, round(probability, 3), "")),
+            vjust = -0.4, size = 3, colour = "#5D6D7E") +
+  scale_fill_manual(values = c("FALSE" = "#1B4F8A", "TRUE" = "#C0392B"),
+                    labels = c("Expected range", "Alarm threshold (>6)"),
+                    name = NULL) +
+  geom_vline(xintercept = lambda, linetype = "dashed",
+             colour = "#E67E22", linewidth = 1) +
+  annotate("text", x = lambda + 0.4, y = 0.18,
+           label = paste0("λ = ", lambda), colour = "#E67E22",
+           fontface = "bold", size = 4) +
+  labs(
+    title    = "Poisson Distribution: Monthly CLABSI Events",
+    subtitle = paste0("Poisson(λ = ", lambda, ")  —  Mean = Variance = ", lambda),
+    x        = "Number of Infections per Month",
+    y        = "P(X = k)"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 14),
+    plot.subtitle    = element_text(colour = "grey40", size = 11),
+    panel.grid.minor = element_blank()
+  )
+
+```
+
+## Control chart logic
+
+```{r poisson-calcs}
+# Probability of 7 or more infections in a month (alarm threshold)
+p_alarm <- ppois(6, lambda = lambda, lower.tail = FALSE)
+cat("P(X >= 7 | lambda = 2.5) =", round(p_alarm, 4),
+    "— false alarm rate if process is in control\n")
+
+# After an intervention, suppose rate drops to 1.2 — detection power
+lambda_new <- 1.2
+cat("\nAfter intervention (lambda =", lambda_new, "):\n")
+cat("Mean infections/month =", lambda_new, "\n")
+cat("P(zero infections in a month) =", round(dpois(0, lambda_new), 3), "\n")
+
+# Simulate 24 months of data under two regimes
+set.seed(123)
+months_pre  <- rpois(12, lambda = lambda)
+months_post <- rpois(12, lambda = lambda_new)
+
+timeline_df <- data.frame(
+  month    = 1:24,
+  count    = c(months_pre, months_post),
+  period   = rep(c("Pre-intervention", "Post-intervention"), each = 12)
+)
+
+ggplot(timeline_df, aes(x = month, y = count, colour = period)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 6, linetype = "dashed", colour = "#C0392B") +
+  annotate("text", x = 23.5, y = 6.4, label = "Alert: 7+",
+           colour = "#C0392B", size = 3.5, hjust = 1) +
+  geom_vline(xintercept = 12.5, linetype = "dotted",
+             colour = "#5D6D7E", linewidth = 1) +
+  annotate("text", x = 12.5, y = max(timeline_df$count) * 0.95,
+           label = "Intervention", colour = "#5D6D7E",
+           angle = 90, vjust = -0.5, size = 3.5) +
+  scale_colour_manual(values = c("Pre-intervention"  = "#1B4F8A",
+                                  "Post-intervention" = "#148F77")) +
+  scale_x_continuous(breaks = seq(2, 24, 2)) +
+  labs(
+    title    = "Simulated CLABSI Surveillance — 24 Months",
+    subtitle = "Poisson process before and after an infection control intervention",
+    x = "Month", y = "Infections", colour = NULL
+  ) +
+  theme_bw(base_size = 13) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 14),
+    plot.subtitle    = element_text(colour = "grey40", size = 11),
+    panel.grid.minor = element_blank()
+  )
+```
+
+> **Interpretation:** The Poisson model provides a statistical baseline.
+> Observing 7 or more infections in a month when λ = 2.5 occurs only
+> `r scales::percent(p_alarm, 0.1)` of the time, making it a reasonable
+> alert threshold for the infection control team.
+
+
+
+Tasks: Change lambda to 7 (a safety alert threshold). How does p_zero change? What does that imply?
+
+```{r}
+#Your solution here 
+
+
+
+```
+---
+
+# The Normal Distribution
+
+## Biological measurements and the 68–95–99.7 rule
+
+Systolic blood pressure in a healthy adult population is approximately
+Normal with **μ = 120 mmHg** and **σ = 15 mmHg**.
+
+```{r normal-setup}
+mu    <- 120
+sigma <- 15
+
+x <- seq(mu - 4 * sigma, mu + 4 * sigma, length.out = 400)
+normal_df <- data.frame(x = x, density = dnorm(x, mean = mu, sd = sigma))
+
+# Shaded regions for ±1σ, ±2σ, ±3σ
+shade_df <- bind_rows(
+  data.frame(x = x[x >= mu - sigma   & x <= mu + sigma],   band = "±1σ (68%)"),
+  data.frame(x = x[x >= mu - 2*sigma & x <= mu + 2*sigma], band = "±2σ (95%)"),
+  data.frame(x = x[x >= mu - 3*sigma & x <= mu + 3*sigma], band = "±3σ (99.7%)")
+) |>
+  left_join(normal_df, by = "x") |>
+  mutate(band = factor(band, levels = c("±3σ (99.7%)", "±2σ (95%)", "±1σ (68%)")))
+
+ggplot() +
+  geom_area(data = shade_df,
+            aes(x = x, y = density, fill = band),
+            alpha = 0.45, position = "identity") +
+  geom_line(data = normal_df, aes(x = x, y = density),
+            colour = "#1B4F8A", linewidth = 1.2) +
+  geom_vline(xintercept = mu, linetype = "dashed",
+             colour = "#1B4F8A", linewidth = 0.8) +
+  scale_fill_manual(
+    values = c("±1σ (68%)"   = "#148F77",
+               "±2σ (95%)"   = "#4DB6AC",
+               "±3σ (99.7%)" = "#B2DFDB"),
+    name = NULL
+  ) +
+  scale_x_continuous(
+    breaks = mu + sigma * (-3:3),
+    labels = paste0(mu + sigma * (-3:3), "\n(",
+                    c("μ−3σ","μ−2σ","μ−σ","μ","μ+σ","μ+2σ","μ+3σ"), ")")
+  ) +
+  labs(
+    title    = "Normal Distribution: Systolic Blood Pressure",
+    subtitle = paste0("N(μ = ", mu, ", σ = ", sigma, ") mmHg"),
+    x = "Systolic BP (mmHg)",
+    y = "Density"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 14),
+    plot.subtitle    = element_text(colour = "grey40", size = 11),
+    panel.grid.minor = element_blank()
+  )
+```
+
+## Standardisation and reference ranges
+
+```{r normal-calcs}
+# What proportion of the population has SBP > 140 mmHg (Stage 1 hypertension)?
+p_hypertension <- pnorm(140, mean = mu, sd = sigma, lower.tail = FALSE)
+cat("P(SBP > 140 mmHg) =", round(p_hypertension, 3),
+    "— proportion classified Stage 1 hypertensive\n")
+
+# What SBP is at the 95th percentile?
+sbp_95 <- qnorm(0.95, mean = mu, sd = sigma)
+cat("95th percentile SBP =", round(sbp_95, 1), "mmHg\n")
+
+# Z-score for a patient with SBP = 155
+sbp_patient <- 155
+z_score <- (sbp_patient - mu) / sigma
+cat("Z-score for SBP =", sbp_patient, "mmHg:", round(z_score, 2),
+    "(", round(pnorm(z_score, lower.tail = FALSE) * 100, 1),
+    "% of population higher)\n")
+
+# Reference range: μ ± 1.96σ (95% of the population)
+lower_95 <- qnorm(0.025, mean = mu, sd = sigma)
+upper_95 <- qnorm(0.975, mean = mu, sd = sigma)
+cat("\n95% reference range:", round(lower_95, 1), "–", round(upper_95, 1), "mmHg\n")
+```
+Tasks: What happens to p_hyper if sigma increases to 20? Discuss the clinical implication.
+
+```{r}
+#Your answer here
+
+
+```
+
+
+---
+
+# The Log-Normal Distribution
+
+## Skewed biomarker data: viral load
+
+HIV viral load (copies/mL) is classically log-normally distributed — values
+are always positive and heavily right-skewed.
+
+```{r lognormal-setup}
+set.seed(99)
+
+# Simulate viral load: log(VL) ~ N(mu_log, sigma_log)
+mu_log    <- 4.0    # log10 scale
+sigma_log <- 0.9
+
+n_patients_vl <- 200
+log_vl    <- rnorm(n_patients_vl, mean = mu_log, sd = sigma_log)
+viral_load <- 10^log_vl   # back-transform to copies/mL
+
+vl_df <- data.frame(
+  viral_load = viral_load,
+  log10_vl   = log_vl
+)
+
+# Side-by-side: raw vs log-transformed
+p_raw <- ggplot(vl_df, aes(x = viral_load)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 35,
+                 fill = "#E67E22", colour = "white", alpha = 0.85) +
+  geom_vline(xintercept = mean(viral_load), colour = "#C0392B",
+             linetype = "dashed", linewidth = 1) +
+  geom_vline(xintercept = 10^mean(log_vl), colour = "#1B4F8A",
+             linetype = "dashed", linewidth = 1) +
+  annotate("text", x = mean(viral_load) * 1.4, y = Inf,
+           label = "Arithmetic\nmean", colour = "#C0392B",
+           vjust = 2, size = 3) +
+  annotate("text", x = 10^mean(log_vl) * 0.4, y = Inf,
+           label = "Geometric\nmean", colour = "#1B4F8A",
+           vjust = 2, hjust = 1, size = 3) +
+  scale_x_continuous(labels = label_comma()) +
+  labs(title    = "Raw Viral Load (copies/mL)",
+       subtitle = "Right-skewed — not Normal",
+       x = "Viral Load", y = "Density") +
+  theme_bw(base_size = 13) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 14),
+    plot.subtitle    = element_text(colour = "grey40", size = 11),
+    panel.grid.minor = element_blank()
+  )
+
+p_log <- ggplot(vl_df, aes(x = log10_vl)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30,
+                 fill = "#148F77", colour = "white", alpha = 0.85) +
+  stat_function(fun = dnorm,
+                args = list(mean = mean(log_vl), sd = sd(log_vl)),
+                colour = "#1B4F8A", linewidth = 1.2) +
+  labs(title    = "Log₁₀ Viral Load",
+       subtitle = "Approximately Normal after log transform",
+       x = "Log₁₀ Viral Load", y = "Density") +
+  theme_bw(base_size = 13) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 14),
+    plot.subtitle    = element_text(colour = "grey40", size = 11),
+    panel.grid.minor = element_blank()
+  )
+
+p_raw + p_log
+```
+
+## Comparing arithmetic and geometric means
+
+```{r lognormal-calcs}
+arith_mean <- mean(viral_load)
+geom_mean  <- 10^mean(log_vl)   # = exp(mean(log(VL))) on natural log scale
+
+cat("Arithmetic mean viral load:", format(round(arith_mean), big.mark = ","), "copies/mL\n")
+cat("Geometric mean viral load: ", format(round(geom_mean),  big.mark = ","), "copies/mL\n")
+cat("\nThe geometric mean is more representative of the 'typical' patient.\n")
+cat("The arithmetic mean is pulled upward by extreme values.\n")
+
+# Test for normality — raw vs log-transformed
+sw_raw <- shapiro.test(sample(viral_load, 50))   # Shapiro-Wilk needs n ≤ 5000
+sw_log <- shapiro.test(sample(log_vl, 50))
+
+cat("\nShapiro-Wilk test (p-value):\n")
+cat("  Raw viral load:        p =", round(sw_raw$p.value, 4),
+    ifelse(sw_raw$p.value < 0.05, "→ NOT Normal", "→ Normal"), "\n")
+cat("  Log10 viral load:      p =", round(sw_log$p.value, 4),
+    ifelse(sw_log$p.value < 0.05, "→ NOT Normal", "→ Normal"), "\n")
+```
+
+> **Take-away for practice:** Always plot your data before analysing it.
+> For biomarkers like viral load, CRP, or enzyme levels, log-transformation
+> is often necessary before applying tests that assume normality
+> (t-tests, ANOVA, linear regression).
+
+---
+
+# Bayes' Theorem in Medical Research
+
+This is the centrepiece application. Bayes' theorem tells us how to update
+the probability of disease given new evidence (a test result).
+
+In clinical terms:
+
+$$\text{PPV} = \frac{\text{Sensitivity} \times \text{Prevalence}}{\text{Sensitivity} \times \text{Prevalence} + (1 - \text{Specificity}) \times (1 - \text{Prevalence})}$$
+
+## Worked example: Colorectal cancer screening
+
+A faecal immunochemical test (FIT) for colorectal cancer has:
+
+- **Sensitivity** = 79% (detects 79% of true cases)  
+- **Specificity** = 94% (correctly clears 94% of non-cases)  
+- **Prevalence** in the screening population ≈ 0.3%  
+
+```{r bayes-function}
+# General Bayes function for a diagnostic test
+bayes_diagnostic <- function(sensitivity, specificity, prevalence) {
+  tp_rate  <- sensitivity * prevalence               # True positive rate
+  fp_rate  <- (1 - specificity) * (1 - prevalence)  # False positive rate
+  p_pos    <- tp_rate + fp_rate                      # Marginal probability of positive
+
+  ppv <- tp_rate / p_pos                             # Positive predictive value
+  npv <- (specificity * (1 - prevalence)) /
+         (specificity * (1 - prevalence) + (1 - sensitivity) * prevalence)  # NPV
+
+  list(
+    PPV             = ppv,
+    NPV             = npv,
+    P_positive      = p_pos,
+    LR_positive     = sensitivity / (1 - specificity),
+    LR_negative     = (1 - sensitivity) / specificity,
+    false_positive_rate = fp_rate / p_pos   # among positives, proportion who are FP
+  )
+}
+
+# FIT test for CRC
+sens  <- 0.79
+spec  <- 0.94
+prev  <- 0.003   # 0.3% prevalence in screening population
+
+result <- bayes_diagnostic(sens, spec, prev)
+
+cat("=== FIT Colorectal Cancer Screening ===\n\n")
+cat("Sensitivity:            ", percent(sens, 0.1), "\n")
+cat("Specificity:            ", percent(spec, 0.1), "\n")
+cat("Prevalence:             ", percent(prev, 0.1), "\n\n")
+cat("Positive Predictive Value (PPV):  ", percent(result$PPV, 0.1),
+    "— only 1 in", round(1/result$PPV), "positives has CRC\n")
+cat("Negative Predictive Value (NPV):  ", percent(result$NPV, 0.01),
+    "— very reassuring if negative\n")
+cat("Positive Likelihood Ratio (LR+):  ", round(result$LR_positive, 1), "\n")
+cat("False discovery rate among positives:", percent(result$false_positive_rate, 0.1), "\n")
+```
+Tasks: Set prevalence to 0.5 (a high-risk screening context). How does PPV change? Why does this matter for interpreting test results in different populations? 
+
+```{r}
+#Your code here
+
+
+
+```
+
+
+
+
+---
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```
+
