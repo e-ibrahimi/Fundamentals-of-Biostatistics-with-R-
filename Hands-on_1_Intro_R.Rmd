@@ -1,0 +1,935 @@
+---
+title: "Introduction to R & Data Management"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: '3'
+    df_print: paged
+  html_notebook:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    number_sections: true
+subtitle: A Clinician's First Steps — Illustrated with Patient Data
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  comment = "#>",
+  fig.width  = 7.5,
+  fig.height = 4.5,
+  fig.align  = "center"
+)
+```
+
+
+------------------------------------------------------------------------
+
+**Learning objectives**
+
+1.  Navigate the R/RStudio environment and understand the core R syntax
+2.  Work with R's fundamental data types and structures
+3.  Build and manipulate data frames that mirror a patient registry
+4.  Import, inspect, and clean messy clinical data
+5.  Reshape longitudinal patient data between wide and long formats
+6.  Summarise and export a clean analytic dataset
+
+------------------------------------------------------------------------
+
+# The R Environment
+
+## Why R in Healthcare?
+
+R is free, reproducible, and used across clinical research,
+epidemiology, public health, and regulatory submissions (FDA accepts
+R-based analyses). The same script that cleaned your data documents
+exactly what was done — essential for audit trails.
+
+## The RStudio Interface
+
+| Pane | Purpose |
+|------------------------------------|------------------------------------|
+| **Source** (top-left) | Write and save `.R` / `.Rmd` scripts |
+| **Console** (bottom-left) | Run code interactively; see output |
+| **Environment** (top-right) | See all objects currently in memory |
+| **Files / Plots / Help** (bottom-right) | Browse files, view plots, read docs |
+
+## Your First Commands
+
+```{r first-commands}
+# Lines starting with # are comments — R ignores them
+# Comments are your notes inside the code
+
+2 + 2          # arithmetic
+sqrt(144)      # square root
+log(10)        # natural log
+log10(10)      # base-10 log
+abs(-7.4)      # absolute value
+```
+
+## Assigning Objects
+
+```{r assignment}
+# <- is the assignment operator  (keyboard shortcut: Alt + -)
+patient_age  <- 54
+patient_name <- "Maria Silva"
+is_diabetic  <- FALSE
+
+# Print by typing the name
+patient_age
+patient_name
+is_diabetic
+
+# Or use cat() / print() for formatted output
+cat("Patient:", patient_name, "| Age:", patient_age, "\n")
+```
+
+::: tip
+Avoid spaces and special characters. Names are case-sensitive:
+<code>BMI</code> ≠ <code>bmi</code>.
+:::
+
+------------------------------------------------------------------------
+
+# Data Types
+
+Choosing the wrong type of variable is one of
+the most common sources of errors in data analysis.
+
+## The Four Core Types
+
+```{r types-demo}
+# numeric — continuous measurements
+systolic_bp   <- 128.5
+body_temp_c   <- 37.2
+creatinine    <- 1.04
+
+# character — text / identifiers
+patient_id    <- "PT-00847"
+diagnosis     <- "Type 2 Diabetes Mellitus"
+icd10_code    <- "E11.9"
+
+# logical — binary TRUE / FALSE flags
+on_insulin    <- FALSE
+icu_admission <- TRUE
+allergy_flag  <- NA          # NA = missing / not recorded
+
+# integer — whole numbers (add L suffix)
+ward_number   <- 4L
+hospital_days <- 7L
+
+# Check the type
+class(systolic_bp)
+class(patient_id)
+class(on_insulin)
+class(ward_number)
+```
+
+## Factors — Categorical Clinical Variables
+
+Factors represent variables with a fixed set of levels (sex, blood
+group, disease severity). They are essential for correct statistical
+modelling.
+
+```{r factors}
+# Create a factor
+blood_group <- factor("A",
+                      levels = c("A", "B", "AB", "O"))
+
+severity <- factor("Moderate",
+                   levels = c("Mild", "Moderate", "Severe"),
+                   ordered = TRUE)   # ordered = TRUE for ordinal variables
+
+# Inspect
+levels(blood_group)
+levels(severity)
+nlevels(severity)
+
+```
+
+## Type Coercion — Converting Between Types
+
+```{r coercion}
+# Character to numeric (e.g., data imported from CSV as text)
+sbp_text   <- "132"
+sbp_number <- as.numeric(sbp_text)
+sbp_number + 10
+
+# Numeric to factor (e.g., coding groups)
+diabetes_code <- c(0, 1, 0, 1, 1)
+diabetes_fct  <- factor(diabetes_code,
+                         levels = c(0, 1),
+                         labels = c("No", "Yes"))
+diabetes_fct
+
+# What happens when conversion fails? Produces NA with a warning
+```
+
+------------------------------------------------------------------------
+
+# Vectors — Working with Patient Measurements
+
+A **vector** is a sequence of values of the same type — the building
+block of all R data structures.
+
+## Creating Vectors
+
+```{r vectors-create}
+# Systolic blood pressure readings for 8 patients
+sbp <- c(118, 135, 142, 128, 156, 101, 148, 122)
+
+# Patient IDs
+ids <- c("PT-001", "PT-002", "PT-003", "PT-004",
+         "PT-005", "PT-006", "PT-007", "PT-008")
+
+# Diabetes status
+diabetic <- c(FALSE, TRUE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE)
+
+# Sequences — useful for generating IDs or visit numbers
+visit_num <- 1:6                      # 1 2 3 4 5 6
+age_grid  <- seq(20, 80, by = 10)    # 20 30 40 50 60 70 80
+
+```
+
+## Vectorised Operations — No Loops Needed
+
+```{r vectors-ops}
+# Convert SBP from mmHg to kPa (1 mmHg ≈ 0.1333 kPa)
+sbp_kPa <- sbp * 0.1333
+sbp_kPa
+
+# Classify hypertension (SBP ≥ 140 mmHg)
+is_hypertensive <- sbp >= 140
+is_hypertensive
+
+# How many patients are hypertensive?
+sum(is_hypertensive)           # TRUE counts as 1
+mean(is_hypertensive) * 100    # percentage
+```
+
+## Subsetting Vectors — Selecting Patients
+
+```{r vectors-subset}
+# By position (1-indexed in R)
+sbp[1]           # first patient
+sbp[c(1, 3, 5)]  # patients 1, 3, 5
+
+# By condition (logical subsetting)
+sbp[is_hypertensive]            # SBP values of hypertensive patients
+ids[is_hypertensive]            # IDs of hypertensive patients
+sbp[sbp > 130 & sbp < 150]     # between 130 and 150
+
+# By name (named vectors)
+names(sbp) <- ids
+sbp["PT-003"]
+```
+
+## Descriptive Functions
+
+```{r vectors-stats}
+length(sbp)          # sample size
+sum(sbp)
+mean(sbp)            # arithmetic mean
+median(sbp)
+sd(sbp)              # standard deviation
+var(sbp)             # variance
+range(sbp)           # min and max
+quantile(sbp)        # quartiles
+IQR(sbp)             # interquartile range
+summary(sbp)         # all in one
+```
+
+------------------------------------------------------------------------
+
+# Data Frames — The Patient Registry 
+
+A **data frame** is a table where each row is a patient (observation)
+and each column is a variable. This mirrors a clinical database exactly.
+
+## Building a Patient Registry from Scratch
+
+```{r df-create}
+patients <- data.frame(
+  patient_id  = c("PT-001","PT-002","PT-003","PT-004","PT-005",
+                  "PT-006","PT-007","PT-008","PT-009","PT-010"),
+  age         = c(54, 67, 45, 72, 38, 61, 55, 49, 80, 33),
+  sex         = factor(c("F","M","F","M","F","M","F","M","M","F"),
+                       levels = c("F","M")),
+  systolic_bp = c(118, 142, 135, 158, 112, 148, 130, 122, 165, 105),
+  diastolic_bp= c( 76,  92,  88,  98,  70,  95,  84,  78, 102,  68),
+  bmi         = c(24.1, 29.8, 32.4, 27.0, 21.5, 31.2, 26.8, 23.9, 28.6, 20.1),
+  diabetes    = factor(c("No","Yes","Yes","No","No","Yes","No","No","Yes","No"),
+                       levels = c("No","Yes")),
+  on_medication = c(FALSE, TRUE, TRUE, TRUE, FALSE, TRUE, FALSE, FALSE, TRUE, FALSE),
+  hba1c       = c(5.4, 8.1, 7.6, 5.9, 5.2, 8.8, 5.7, 5.5, 9.2, 4.9),
+  stringsAsFactors = FALSE
+)
+
+patients
+
+```
+
+## Inspecting the Registry
+
+```{r df-inspect}
+nrow(patients)      # number of patients
+ncol(patients)      # number of variables
+dim(patients)       # both at once
+
+str(patients)       # structure — types + preview (always run this after importing)
+head(patients, 4)   # first 4 rows
+tail(patients, 3)   # last 3 rows
+summary(patients)   # statistical overview per column
+```
+
+## Accessing Columns
+
+```{r df-cols}
+patients$age                  # dollar sign — returns a vector
+patients$sex
+patients[["systolic_bp"]]     # double-bracket — identical result
+patients[ , "bmi"]            # [row, col] — blank row = all rows
+patients[ , c("patient_id", "age", "diabetes")]   # multiple columns
+```
+
+## Accessing Rows — Querying Patients
+
+```{r df-rows}
+patients[3, ]                                 # row 3, all columns
+patients[patients$diabetes == "Yes", ]        # all diabetic patients
+patients[patients$age > 60, ]                 # patients over 60
+patients[patients$bmi > 30 & patients$sex == "M", ]  # obese male patients
+```
+
+## Adding & Modifying Columns
+
+```{r df-mutate}
+# Derived variable: pulse pressure
+patients$pulse_pressure <- patients$systolic_bp - patients$diastolic_bp
+
+# Classify BP stage (JNC 8 thresholds)
+patients$bp_stage <- cut(
+  patients$systolic_bp,
+  breaks = c(0, 119, 129, 139, Inf),
+  labels = c("Normal", "Elevated", "Stage 1 HTN", "Stage 2 HTN"),
+  right  = TRUE
+)
+
+# Recode HbA1c control: <7% = controlled
+patients$hba1c_controlled <- ifelse(patients$hba1c < 7, "Controlled", "Uncontrolled")
+
+patients[, c("patient_id","systolic_bp","pulse_pressure","bp_stage","hba1c","hba1c_controlled")]
+```
+
+
+------------------------------------------------------------------------
+
+# Packages & the Tidyverse {.badge}
+
+```{r pkg-install, eval=FALSE}
+# Run once to install, then comment using #
+#install.packages(c("tidyverse", "readxl", "janitor", "skimr", "writexl", "lubridate"))
+```
+
+
+```{r pkg-load}
+#Load the packages
+library(tidyverse)    # dplyr + tidyr + ggplot2 + readr + more
+library(janitor)      # clean_names(), tabyl()
+library(skimr)        # skim() — rich summary statistics
+library(lubridate)    # date handling
+library(readxl)       # read Excel files
+library(writexl)      # write Excel files
+```
+
+| Package     | Role in data management                               |
+|-------------|-------------------------------------------------------|
+| `dplyr`     | Filter, select, mutate, summarise patient records     |
+| `tidyr`     | Reshape wide ↔ long (e.g., repeated measurements)     |
+| `readr`     | Read CSV files quickly with smart type detection      |
+| `readxl`    | Read `.xlsx` / `.xls` files                           |
+| `janitor`   | Clean messy column names, frequency tables            |
+| `lubridate` | Parse and calculate with dates (admission, DOB, etc.) |
+| `skimr`     | Rich one-call data summary                            |
+
+------------------------------------------------------------------------
+
+# Importing Clinical Data
+
+## Reading CSV Files
+
+```{r import-csv, eval=FALSE}
+
+stwd("C:/Users/ibrah/OneDrive/Desktop/Physalia Course")
+
+#Save the dataframe as csv file in working directory
+write.csv(patients, "patient_registry.csv")
+
+# From a local file
+patient_data <- read_csv("patient_registry.csv") #importing dataset
+
+# Common arguments
+patient_data <- read_csv(
+  "data/patient_registry.csv",
+  na      = c("", "NA", "N/A", "missing", "9999"),  # what counts as missing
+  skip    = 2,         # skip 2 header rows (common in exported EMR files)
+  n_max   = 5000       # read first 5000 rows only
+)
+
+
+```
+
+## Simulating a "Messy Import" — What Real Data Looks Like
+
+```{r import-messy}
+# Simulate what you'd get from a poorly formatted hospital export
+messy_raw <- data.frame(
+  `Patient ID`     = c("pt001", "PT002", "pt003", "PT004", "pt005",
+                        "pt006", "PT007", "pt008", "pt009", "pt010"),
+  `Age (years)`    = c("23", "45", "67", "34", "56", "29", "72", "41", "38", "N/A"),
+  `SEX`            = c("Male","female","MALE","Female","male",
+                        "FEMALE","Male","female","Male","Female"),
+  `SBP (mmHg)`     = c("120", "138", "155", "112", "140",
+                        "125", "162", "130", "118", "145"),
+  `Admission Date` = c("01/03/2024","15-03-2024","2024-03-20","2024/03/22","03/04/2024",
+                        "10-04-2024","2024-04-15","25/04/2024","30-04-2024","2024-05-01"),
+  `Outcome`        = c("discharged","Discharged","DISCHARGED","deceased",
+                        "discharged","transferred","Discharged","deceased",
+                        "Discharged","TRANSFERRED"),
+  check.names      = FALSE,
+  stringsAsFactors = FALSE
+)
+
+messy_raw
+```
+
+Notice the problems: inconsistent capitalisation, mixed date formats,
+ages stored as characters, column names with spaces and units, "N/A" not
+recognised as missing.
+
+------------------------------------------------------------------------
+
+# Data Cleaning
+
+## Step 1 — Fix Column Names
+
+```{r clean-names}
+# janitor::clean_names() converts all names to snake_case
+clean1 <- messy_raw |>
+  clean_names()
+
+names(clean1)
+```
+
+## Step 2 — Fix Data Types
+
+```{r clean-types}
+clean2 <- clean1 |>
+  rename(
+    patient_id = patient_id,
+    age        = age_years,
+    sbp        = sbp_mm_hg,
+    adm_date   = admission_date
+  ) |>
+  mutate(
+    age = as.numeric(age),                    # "N/A" becomes NA automatically
+    sbp = as.numeric(sbp)
+  )
+
+str(clean2)
+```
+
+## Step 3 — Standardise Categorical Values
+
+```{r clean-categories}
+clean3 <- clean2 |>
+  mutate(
+    # Standardise sex to Title Case, then factor
+    sex     = str_to_title(str_trim(sex)),
+    sex     = factor(sex, levels = c("Female", "Male")),
+
+    # Standardise outcome
+    outcome = str_to_lower(str_trim(outcome)),
+    outcome = factor(outcome,
+                     levels = c("discharged", "deceased", "transferred"))
+  )
+
+count(clean3, sex)
+count(clean3, outcome)
+```
+
+## Step 4 — Parse Dates
+
+```{r clean-dates}
+clean4 <- clean3 |>
+  mutate(
+    # lubridate::parse_date_time handles multiple mixed formats in one call
+    adm_date = parse_date_time(
+      adm_date,
+      orders = c("dmy", "dmY", "Ymd", "Y/m/d")
+    ) |> as_date()
+  )
+
+clean4 |> select(patient_id, adm_date)
+
+# Date arithmetic
+clean4 <- clean4 |>
+  mutate(
+    days_since_adm = as.numeric(today() - adm_date),
+    adm_month      = month(adm_date, label = TRUE, abbr = FALSE),
+    adm_year       = year(adm_date)
+  )
+
+clean4 |> select(patient_id, adm_date, days_since_adm, adm_month)
+```
+
+## Step 5 — Handle Missing Values
+
+```{r clean-missing}
+# How many missing per column?
+colSums(is.na(clean4))
+
+# Visualise missingness pattern
+clean4 |>
+  summarise(across(everything(), ~mean(is.na(.)) * 100)) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "pct_missing") |>
+  arrange(desc(pct_missing))
+```
+
+```{r clean-impute}
+# Option A — Drop rows with missing key variables
+clean4 |> drop_na(age, sbp)
+
+# Option B — Replace NA with median (simple imputation for teaching)
+clean5 <- clean4 |>
+  mutate(
+    age = if_else(is.na(age), median(age, na.rm = TRUE), age),
+    sbp = if_else(is.na(sbp), median(sbp, na.rm = TRUE), sbp)
+  )
+
+colSums(is.na(clean5))
+```
+
+## Step 6 — Remove Duplicates
+
+```{r clean-dupes}
+# Check for duplicate patient IDs
+clean5 |>
+  count(patient_id) |>
+  filter(n > 1)
+
+# If duplicates exist: keep the first occurrence
+clean6 <- clean5 |>
+  distinct(patient_id, .keep_all = TRUE)
+
+nrow(clean5)
+nrow(clean6)
+```
+
+------------------------------------------------------------------------
+
+# Data Manipulation with dplyr {.badge}
+
+We switch back to the clean `patients` data frame (10 patients with
+known clinical variables) for these examples.
+
+## The Pipe Operator `|>`
+
+The pipe passes the left-hand side as the first argument to the next
+function:
+
+```{r pipe-demo}
+# Without pipe — hard to read
+round(mean(patients$systolic_bp), 1)
+
+# With pipe — reads left to right like a protocol
+patients$systolic_bp |> mean() |> round(1)
+```
+
+## filter() — Select Rows (Patients)
+
+```{r dplyr-filter}
+# Diabetic patients only
+patients |> filter(diabetes == "Yes")
+
+# Hypertensive women over 50
+patients |> filter(systolic_bp >= 140, sex == "F", age > 50)
+
+# Multiple allowed values (like SQL IN)
+patients |> filter(bp_stage %in% c("Stage 1 HTN", "Stage 2 HTN"))
+```
+
+## select() — Choose Variables
+
+```{r dplyr-select}
+# Keep only the variables needed for a BP analysis
+patients |> select(patient_id, age, sex, systolic_bp, diastolic_bp, bp_stage)
+
+# Drop variables with -
+patients |> select(-on_medication, -hba1c_controlled)
+
+# Reorder: bring key ID columns first
+patients |> select(patient_id, age, sex, everything())
+
+# Select by type
+patients |> select(where(is.numeric))
+```
+
+## mutate() — Create & Transform Variables
+
+```{r dplyr-mutate}
+patients <- patients |>
+  mutate(
+    # BMI classification (WHO thresholds)
+    bmi_class = case_when(
+      bmi < 18.5             ~ "Underweight",
+      bmi >= 18.5 & bmi < 25 ~ "Normal",
+      bmi >= 25   & bmi < 30 ~ "Overweight",
+      bmi >= 30              ~ "Obese"
+    ) |> factor(levels = c("Underweight","Normal","Overweight","Obese"),
+                ordered = TRUE),
+
+    # Age group — common in clinical reporting
+    age_group = cut(age,
+                    breaks = c(0, 40, 60, Inf),
+                    labels = c("<40", "40–60", ">60"),
+                    right  = FALSE),
+
+    # Flag high-risk: diabetic AND hypertensive
+    high_risk = diabetes == "Yes" & systolic_bp >= 140
+  )
+
+patients |> select(patient_id, age, age_group, bmi, bmi_class, diabetes,
+                   systolic_bp, high_risk)
+```
+
+## arrange() — Sort Records
+
+```{r dplyr-arrange}
+# By SBP descending — find most hypertensive patients
+patients |>
+  arrange(desc(systolic_bp)) |>
+  select(patient_id, age, sex, systolic_bp, bp_stage)
+```
+
+## summarise() + group_by() — Clinical Aggregation
+
+```{r dplyr-summarise}
+# Overall summary statistics
+patients |>
+  summarise(
+    n          = n(),
+    mean_sbp   = round(mean(systolic_bp), 1),
+    sd_sbp     = round(sd(systolic_bp), 1),
+    pct_diab   = round(mean(diabetes == "Yes") * 100, 1),
+    mean_bmi   = round(mean(bmi), 1)
+  )
+
+# Stratified by diabetes status
+patients |>
+  group_by(diabetes) |>
+  summarise(
+    n        = n(),
+    mean_sbp = round(mean(systolic_bp), 1),
+    mean_bmi = round(mean(bmi), 1),
+    mean_hba1c = round(mean(hba1c), 1)
+  )
+
+# Three-way breakdown: sex × diabetes
+patients |>
+  group_by(sex, diabetes) |>
+  summarise(n = n(), mean_sbp = round(mean(systolic_bp), 1),
+            .groups = "drop")
+```
+
+## Full Cleaning Pipeline — Chaining Steps
+
+```{r dplyr-pipeline}
+# Build an analytic sub-dataset for diabetic patients in one readable pipeline
+diabetic_summary <- patients |>
+  filter(diabetes == "Yes") |>
+  select(patient_id, age, sex, bmi, bmi_class, hba1c,
+         systolic_bp, bp_stage, on_medication) |>
+  mutate(
+    bp_controlled  = systolic_bp < 130,
+    hba1c_target   = hba1c < 7.0
+  ) |>
+  arrange(desc(hba1c))
+
+diabetic_summary
+```
+
+------------------------------------------------------------------------
+
+# Reshaping Data with tidyr {.badge}
+
+Clinical data often arrives in **wide** format (one row per patient, one
+column per time-point) but analyses require **long** format (one row per
+patient-visit).
+
+## Wide → Long: Repeated BP Measurements
+
+```{r reshape-wide}
+# Wide format: SBP measured at 4 visits
+bp_wide <- tibble(
+  patient_id = c("PT-001","PT-002","PT-003","PT-004","PT-005"),
+  sbp_wk0    = c(158, 145, 172, 138, 165),
+  sbp_wk4    = c(148, 138, 160, 132, 154),
+  sbp_wk8    = c(140, 130, 152, 128, 145),
+  sbp_wk12   = c(132, 125, 144, 122, 138)
+)
+
+bp_wide
+```
+
+```{r pivot-longer}
+# Long format: one row per patient per visit
+bp_long <- bp_wide |>
+  pivot_longer(
+    cols         = starts_with("sbp_wk"),
+    names_to     = "visit",
+    names_prefix = "sbp_",         # strip the prefix to keep "wk0", "wk4"…
+    values_to    = "sbp"
+  ) |>
+  mutate(
+    week = as.integer(str_remove(visit, "wk"))  # extract numeric week
+  )
+
+bp_long
+```
+
+```{r pivot-longer-plot}
+# Long format enables ggplot2 to draw a trajectory per patient
+ggplot(bp_long, aes(x = week, y = sbp,
+                    colour = patient_id, group = patient_id)) +
+  geom_line(linewidth = .9) +
+  geom_point(size = 2.5) +
+  geom_hline(yintercept = 130, linetype = "dashed",
+             colour = "grey40", linewidth = .7) +
+  annotate("text", x = 10.5, y = 131.5,
+           label = "Target < 130 mmHg", size = 3.2, colour = "grey40") +
+  scale_x_continuous(breaks = c(0, 4, 8, 12)) +
+  labs(title   = "Systolic BP Trajectories Over 12 Weeks",
+       x       = "Week",
+       y       = "Systolic BP (mmHg)",
+       colour  = "Patient") +
+  theme_minimal(base_size = 13)
+```
+
+## Long → Wide: Spreading Back
+
+```{r pivot-wider}
+# Useful when creating summary tables for reports
+bp_long |>
+  select(patient_id, visit, sbp) |>
+  pivot_wider(names_from  = visit,
+              values_from = sbp,
+              names_prefix = "sbp_")
+```
+
+## separate() & unite() — Splitting / Combining Columns
+
+```{r separate-unite}
+# A column mixing ward and bed number
+location <- tibble(location_code = c("ICU-12","Ward3-07","ED-03","Ward2-14"))
+
+# Split into two columns
+location |>
+  separate(location_code, into = c("ward", "bed"), sep = "-")
+
+# Join two columns into one (e.g., first + last name)
+names_df <- tibble(first = c("Maria","João","Ana"), last = c("Silva","Costa","Pereira"))
+names_df |>
+  unite("full_name", first, last, sep = " ")
+```
+
+------------------------------------------------------------------------
+
+# Joining Datasets 
+
+Clinical data often lives in separate tables (demographics, labs,
+prescriptions) that must be linked by a patient ID.
+
+```{r joins-setup}
+# Table 1: demographics
+demographics <- tibble(
+  patient_id = c("PT-001","PT-002","PT-003","PT-004","PT-005"),
+  age        = c(54, 67, 45, 72, 38),
+  sex        = c("F","M","F","M","F")
+)
+
+# Table 2: most recent lab results (not all patients have labs)
+labs <- tibble(
+  patient_id  = c("PT-001","PT-002","PT-004","PT-006"),   # PT-003/005 missing, PT-006 new
+  hba1c       = c(7.1, 8.4, 6.2, 9.1),
+  creatinine  = c(0.9, 1.2, 1.0, 1.8)
+)
+```
+
+```{r joins-demo}
+# left_join: keep ALL patients from demographics, add labs where available
+left_join(demographics, labs, by = "patient_id")
+
+# inner_join: keep only patients present in BOTH tables
+inner_join(demographics, labs, by = "patient_id")
+
+# anti_join: patients in demographics but NOT in labs (missing labs)
+anti_join(demographics, labs, by = "patient_id")
+```
+
+| Join type | Keeps |
+|------------------------------------|------------------------------------|
+| `left_join` | All rows from left table; matched data from right (fill NA if no match) |
+| `right_join` | All rows from right table |
+| `inner_join` | Only rows with a match in both tables |
+| `full_join` | All rows from both tables |
+| `anti_join` | Rows in left with NO match in right (find missing records) |
+
+------------------------------------------------------------------------
+
+# Saving Your Work {.badge}
+
+```{r save-csv, eval=FALSE}
+# Export the clean analytic dataset as CSV
+write_csv(patients, "clean_patient_registry.csv")
+
+# Export as Excel (requires writexl package)
+# install.packages("writexl")
+writexl::write_xlsx(patients, "clean_patient_registry.xlsx")
+```
+
+```{r save-rds, eval=FALSE}
+# Save as an R object (preserves factor levels, data types exactly)
+saveRDS(patients, "clean_patient_registry.rds")
+
+# Reload later
+patients <- readRDS("clean_patient_registry.rds")
+```
+
+```{r save-plot, eval=FALSE}
+# Save the last ggplot
+ggsave("bp_trajectories.png", width = 8, height = 5, dpi = 150)
+```
+
+------------------------------------------------------------------------
+
+# Exercises {.tabset}
+
+## Exercise 1 — Vector Operations
+
+**You have HbA1c values for 10 patients:**\
+`c(5.4, 8.1, 7.6, 5.9, 5.2, 8.8, 5.7, 5.5, 9.2, 4.9)`
+
+1.  Store them in a vector called `hba1c`
+2.  How many patients have HbA1c ≥ 7.0 (diabetic range)?
+3.  What is the mean HbA1c of those patients?
+
+### Answer
+
+```{r ex1}
+#Your code here
+
+```
+
+## Exercise 2 — Data Frame + dplyr
+
+**Using the `patients` data frame:**
+
+1.  Filter to patients who are obese (`bmi_class == "Obese"`) and on
+    medication
+2.  Select only `patient_id`, `age`, `sex`, `bmi`, `hba1c`,
+    `systolic_bp`
+3.  Arrange by `hba1c` descending
+4.  Add a column `bp_risk` that is `TRUE` if `systolic_bp ≥ 140`
+
+### Answer
+
+```{r ex2}
+#your code here
+
+
+```
+
+## Exercise 3 — Pivot + Visualise
+
+**The table below shows eGFR (kidney function) measured at three
+time-points.**\
+Pivot it to long format, then plot eGFR trajectories over time.
+
+```{r ex3-setup}
+egfr_wide <- tibble(
+  patient_id  = paste0("PT-00", 1:6),
+  egfr_month0 = c(85, 62, 45, 72, 90, 55),
+  egfr_month6 = c(80, 58, 42, 70, 88, 51),
+  egfr_month12= c(74, 53, 38, 68, 85, 47)
+)
+egfr_wide
+```
+
+### Answer
+
+```{r ex3}
+#Your code here
+
+
+```
+
+## Exercise 4 — Joining Tables
+
+**Join the `demographics` and `labs` tables (created in the Joining
+section).**
+
+1.  Perform a `left_join` and count how many patients are missing lab
+    values
+2.  Create a flag column `labs_available` that is `TRUE` when `hba1c` is
+    not NA
+
+### Answer
+
+```{r ex4}
+#Your code here
+
+
+```
+
+------------------------------------------------------------------------
+
+# Summary — What You Learned
+
+| Topic | Key functions |
+|------------------------------------|------------------------------------|
+| **R syntax & objects** | `<-`, `class()`, `c()`, `factor()`, `as.numeric()` |
+| **Vector operations** | subsetting with `[]`, `sum()`, `mean()`, `summary()` |
+| **Data frames** | `data.frame()`, `$`, `str()`, `head()`, `nrow()` |
+| **Importing data** | `read_csv()`, `read_excel()`, `clean_names()` |
+| **Data cleaning** | `str_to_lower()`, `parse_date_time()`, `drop_na()`, `distinct()` |
+| **dplyr verbs** | `filter()`, `select()`, `mutate()`, `arrange()`, `summarise()`, `group_by()` |
+| **Reshaping** | `pivot_longer()`, `pivot_wider()`, `separate()`, `unite()` |
+| **Joining** | `left_join()`, `inner_join()`, `anti_join()` |
+| **Exporting** | `write_csv()`, `saveRDS()`, `ggsave()` |
+
+::: info
+<strong>📚 Recommended next steps</strong><br> • <strong>R for Data
+Science (free):</strong> <https://r4ds.hadley.nz> — chapters on data
+transformation and tidy data<br> • <strong>CRAN Task View — Clinical
+Trials:</strong> <https://cran.r-project.org/view=ClinicalTrials><br> •
+<strong>dplyr cheatsheet:</strong>
+<https://posit.co/resources/cheatsheets/><br> • <strong>Biostatistics
+with R (this series, next session):</strong> t-tests, chi-square,
+regression on the NHANES dataset
+:::
+
+```{r session-info, echo=FALSE}
+sessionInfo()
+```
