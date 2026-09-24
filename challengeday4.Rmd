@@ -1,0 +1,418 @@
+---
+title: 'Multiple Logistic Regression: Analyzing Cancer Risk'
+author: "BioData Analysis Tutorial"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    df_print: paged
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width  = 7,
+  fig.height = 5
+)
+```
+
+---
+
+# Introduction
+
+**Logistic regression** is a statistical method used to model the relationship between one or more independent variables (predictors) and a **binary outcome** — an outcome with only two possible categories, usually coded as **0** and **1**.
+
+Unlike linear regression (where the outcome is continuous), logistic regression predicts the **probability** that an event occurs — for example, whether a patient **does** or **does not** have cancer.
+
+Because probabilities must lie between 0 and 1, logistic regression transforms the relationship using the **logit function**, which maps probabilities onto the entire real line:
+
+$$\text{logit}(p) = \log\!\left(\frac{p}{1-p}\right) = \beta_0 + \beta_1 x_1 + \cdots + \beta_k x_k$$
+
+The model **does not predict probability directly**, but predicts the **log odds**, which can then be transformed back:
+
+$$\hat{p} = \frac{e^{\beta_0 + \beta_1 x_1 + \cdots + \beta_k x_k}}{1 + e^{\beta_0 + \beta_1 x_1 + \cdots + \beta_k x_k}}$$
+
+---
+
+## Study Design
+
+Suppose you're a researcher studying factors associated with a positive cancer diagnosis. You collect data on **200 patients**. For each patient, you know:
+
+| Variable | Type | Description |
+|---|---|---|
+| `Age` | Continuous | Patient age in years |
+| `BMI` | Continuous | Body Mass Index |
+| `SmokingStatus` | Categorical | Smoker / Non-Smoker |
+| `FamilyHistory` | Categorical | Family history of cancer: Yes / No |
+| `CancerStatus` | Binary outcome | 1 = diagnosed, 0 = not diagnosed |
+
+---
+
+# Step 1: Load Packages
+
+```{r load-packages}
+
+# Install missing packages and load libraries
+
+packages <- c("tidyverse", "car", "pscl", "ResourceSelection", "pROC")
+
+installed <- installed.packages()[, "Package"]
+missing   <- packages[!packages %in% installed]
+
+if (length(missing) > 0) {
+  message("Installing missing packages: ", paste(missing, collapse = ", "))
+  install.packages(missing)
+} else {
+  message("All packages already installed.")
+}
+
+library(tidyverse)
+library(car)
+library(pscl)
+library(ResourceSelection)
+library(pROC)
+
+```
+
+
+# Load the data
+```{r data-summary}
+
+data <- read_csv("framingham.csv")
+# Quick overview
+glimpse(data)
+
+data=na.omit(data)
+
+data$male <- as.factor(data$male)
+data$currentSmoker <- as.factor(data$currentSmoker)
+data$diabetes <- as.factor(data$diabetes)
+
+# Outcome distribution
+data %>%
+  count(TenYearCHD) %>%
+  mutate(Proportion = round(n / sum(n), 2))
+
+```
+
+---
+
+# Step 2: Fit the Multiple Logistic Regression Model
+
+```{r fit-model}
+# Fit the logistic regression model
+model <- glm(TenYearCHD ~ age + BMI + male + currentSmoker + diabetes + totChol + glucose,
+             data   = data,
+             family = binomial)
+
+# View the model summary
+summary(model)
+```
+
+---
+
+# Step 3: Interpret the Results
+
+## Odds Ratios
+
+Coefficients are on the **log-odds scale**. Exponentiating converts them to **odds ratios (OR)** — the most intuitive unit of interpretation.
+
+```{r odds-ratios}
+# Compute odds ratios with 95% confidence intervals
+OR_table <- exp(cbind(OR = coef(model), confint(model)))
+round(OR_table, 3)
+```
+
+**Interpretation of each predictor:**
+
+
+
+## Coefficient Plot
+
+```{r coef-plot}
+# Build a tidy OR data frame for plotting
+or_df <- data.frame(
+  Term     = rownames(OR_table),
+  OR       = OR_table[, "OR"],
+  Lower    = OR_table[, "2.5 %"],
+  Upper    = OR_table[, "97.5 %"]
+) %>%
+  filter(Term != "(Intercept)")
+
+ggplot(or_df, aes(x = OR, y = reorder(Term, OR))) +
+  geom_point(size = 4, color = "tomato") +
+  geom_errorbarh(aes(xmin = Lower, xmax = Upper), height = 0.25, color = "tomato") +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50") +
+  labs(title = "Odds Ratios with 95% Confidence Intervals",
+       x = "Odds Ratio (OR)", y = NULL) +
+  theme_minimal(base_size = 13)
+```
+
+---
+
+# Step 4: Visualize Model Performance (ROC & AUC)
+
+The **Receiver Operating Characteristic (ROC) curve** shows how well the model discriminates between patients with and without cancer across all possible thresholds.
+
+```{r roc-curve}
+# Get predicted probabilities from the model
+probabilities <- predict(model, type = "response")
+
+# Actual outcomes
+actual <- data$TenYearCHD
+
+# Create ROC object
+roc_obj <- roc(actual, probabilities, quiet = TRUE)
+
+# Plot ROC curve
+plot(roc_obj,
+     main = "ROC Curve for Cancer Prediction",
+     col  = "#2C7BB6",
+     lwd  = 3)
+legend("bottomright",
+       legend = paste0("AUC = ", round(auc(roc_obj), 3)),
+       col = "#2C7BB6", lwd = 3, bty = "n")
+
+# Print AUC
+cat("Area under the curve (AUC):", round(auc(roc_obj), 3), "\n")
+```
+
+**AUC Interpretation guide:**
+
+| AUC | Discrimination |
+|---|---|
+| 0.6 | No discrimination (random) |
+| 0.7 – 0.8 | Acceptable |
+| 0.8 – 0.9 | Good |
+| > 0.9 | Excellent |
+
+An AUC of **~0.799** indicates the model can reliably rank patients by cancer risk **79.9% of the time**.
+
+---
+
+# Step 6: Confusion Matrix & Classification Metrics
+
+Choose a **threshold** (default = 0.5) to convert predicted probabilities into class labels.
+
+```{r confusion-matrix}
+# Classify patients using 0.5 threshold
+predicted_class <- ifelse(probabilities > 0.5, 1, 0)
+
+# Confusion matrix
+cm <- table(Predicted = predicted_class, Actual = actual)
+print(cm)
+```
+
+```{r classification-metrics}
+# Accuracy
+accuracy    <- mean(predicted_class == actual)
+
+# Sensitivity (True Positive Rate — how well we catch cancer cases)
+sensitivity <- sum(predicted_class == 1 & actual == 1) / sum(actual == 1)
+
+# Specificity (True Negative Rate — how well we rule out cancer)
+specificity <- sum(predicted_class == 0 & actual == 0) / sum(actual == 0)
+
+cat(sprintf("Accuracy    : %.2f\n", accuracy))
+cat(sprintf("Sensitivity : %.2f\n", sensitivity))
+cat(sprintf("Specificity : %.2f\n", specificity))
+```
+
+**Interpretation:**
+
+- **True Negatives**: Patients correctly classified as no cancer.
+- **True Positives**: Patients correctly classified as having cancer.
+- **False Negatives**: Cancer cases the model missed *(clinically costly)*.
+- **False Positives**: Non-cancer patients flagged as at risk.
+
+
+---
+
+# Step 6: Check Assumptions (Diagnostics)
+
+## 7.1 Linearity in the Logit (Box-Tidwell Test)
+
+Check whether continuous predictors have a linear relationship with the log-odds by adding interaction terms $x \cdot \log(x)$.
+
+```{r box-tidwell}
+# Add log-transformed terms
+data$logage <- log(data$age)
+data$logBMI <- log(data$BMI)
+data$logglucose <- log(data$glucose)
+
+# Fit model with Box-Tidwell interaction terms
+model_bt <- glm(TenYearCHD ~ age + BMI + male + currentSmoker + diabetes + totChol + glucose +
+                  I(age * logage) + I(BMI * logBMI) + I(glucose*logglucose),
+                data   = data,
+                family = binomial)
+
+summary(model_bt)
+```
+
+> If `I(Age * logAge)` and `I(BMI * logBMI)` are **not significant**, the linearity assumption holds. ✔
+
+## 6.2 Multicollinearity (VIF)
+
+```{r vif}
+# Variance Inflation Factors
+vif(model)
+```
+
+> VIF values **< 5** indicate acceptable multicollinearity. Values near 1–2 are ideal.
+
+## 6.3 Influential Points (Cook's Distance)
+
+```{r cooks-distance}
+cooksd <- cooks.distance(model)
+
+plot(cooksd,
+     pch  = 19,
+     cex  = 1.2,
+     col  = ifelse(cooksd > 4 / nrow(data), "tomato", "steelblue"),
+     main = "Cook's Distance — Influential Observations",
+     ylab = "Cook's Distance")
+abline(h = 4 / nrow(data), col = "red", lty = 2)
+
+# Identify influential points
+influential <- which(cooksd > 4 / nrow(data))
+cat("Number of influential points:", length(influential), "\n")
+if (length(influential) > 0) cat("Row indices:", influential, "\n")
+```
+
+---
+
+# Step 7: Goodness-of-Fit
+
+## 7.1 McFadden's Pseudo R²
+
+```{r pseudo-r2}
+pR2(model)
+```
+
+> McFadden's R² values of **0.2–0.4** suggest a reasonably well-fitting model.
+
+## 7.2 Likelihood Ratio Test
+
+Compare the fitted model to a **null model** (intercept only) to confirm that the predictors improve fit.
+
+```{r lrt}
+# Null (intercept-only) model
+model_null <- glm(TenYearCHD ~ 1, data = data, family = binomial)
+
+# Likelihood Ratio Test
+anova(model_null, model, test = "Chisq")
+```
+
+> A **significant p-value** means the predictors collectively improve the model beyond the null. ✔
+
+## 7.3 Hosmer-Lemeshow Test
+
+```{r hosmer-lemeshow}
+# Hosmer-Lemeshow goodness-of-fit test (g = 10 groups)
+hoslem.test(data$TenYearCHD, fitted(model), g = 10)
+```
+
+> A **non-significant p-value (> 0.05)** indicates good calibration — predicted probabilities match observed event rates.
+
+
+
+---
+
+# Part II — Poisson Regression
+
+
+## Model Building
+
+
+### Model 3 — Adjusted 
+
+```{r epil-adjusted}
+pois_model <- glm(cigsPerDay ~ male + age + BMI,
+           data   = data,
+           family = poisson)
+summary(pois_model)
+```
+
+```{r}
+IRR_table <- exp(cbind(
+  IRR      = coef(pois_model),
+  Lower95  = confint(pois_model)[, 1],
+  Upper95  = confint(pois_model)[, 2]
+))
+
+cat("\nIRR with 95% CI:\n")
+print(round(IRR_table, 3))
+```
+
+Interpretation: 
+
+
+#Plot the results 
+
+```{r epil-irr-forest}
+cf_ep2 <- data.frame(
+  Term     = names(coef(pois_model))[-1],
+  IRR      = exp(coef(pois_model))[-1],
+  CI_lower = exp(confint.default(pois_model))[-1, 1],
+  CI_upper = exp(confint.default(pois_model))[-1, 2],
+  p_value  = coef(summary(pois_model))[-1, 4]
+)
+
+ggplot(cf_ep2, aes(x = IRR, y = reorder(Term, IRR))) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "gray50", linewidth = 0.8) +
+  geom_errorbarh(aes(xmin = CI_lower, xmax = CI_upper),
+                 height = 0.25, color = "#2c7fb8", linewidth = 0.9) +
+  geom_point(aes(color = p_value < 0.05), size = 3.5) +
+  scale_color_manual(
+    values = c("TRUE" = "#d7301f", "FALSE" = "#2c7fb8"),
+    labels = c("TRUE" = "p < 0.05", "FALSE" = "p ≥ 0.05"), name = NULL
+  ) +
+  scale_x_log10() +
+  labs(
+    title    = "Incidence Rate Ratios: Epileptic Seizures (Adjusted Poisson Model)",
+    subtitle = "IRR < 1 = fewer seizures; IRR > 1 = more seizures",
+    x = "Incidence Rate Ratio (log scale)", y = NULL
+  ) +
+  theme(legend.position = "top")
+```
+
+
+
+## Diagnostics
+
+### 1. Overdispersion Check
+
+```{r epil-overdispersion}
+phi <- deviance(pois_model) / df.residual(pois_model)
+p_formal <- pchisq(deviance(pois_model), df.residual(pois_model), lower.tail = FALSE)
+
+cat("── Overdispersion Diagnostic ──────────────────────────────────\n")
+cat(sprintf("Residual deviance:  %.2f\n", deviance(pois_model)))
+cat(sprintf("Residual df:        %d\n",   df.residual(pois_model)))
+cat(sprintf("Dispersion φ = Dev/df: %.3f\n\n", phi))
+cat(sprintf("Formal chi-square test p-value: %.8f\n\n", p_formal))
+cat(sprintf("Interpretation: φ = %.2f >> 1 → strong overdispersion detected.\n", phi))
+cat("Standard Poisson SEs are underestimated → inference is anti-conservative.\n")
+cat("Remedies: Quasi-Poisson (corrects SE) or Negative Binomial (re-specifies variance).\n")
+```
+
+### 2. QQ Plot of Deviance Residuals
+
+```{r epil-qq}
+qqnorm(residuals(pois_model, type = "deviance"),
+       main  = "QQ Plot of Deviance Residuals (Poisson Model)",
+       col   = "#2c7fb8", pch = 16, cex = 0.7)
+qqline(residuals(pois_model, type = "deviance"),
+       col = "#d7301f", lwd = 1.5)
+mtext("Heavy tails confirm overdispersion — Poisson assumption is violated",
+      side = 3, cex = 0.8, col = "gray40")
+```
+

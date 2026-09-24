@@ -1,0 +1,430 @@
+---
+title: "Introduction to Survival Analysis"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: '3'
+    df_print: paged
+  html_notebook:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  comment = "#>",
+  fig.width  = 3,
+  fig.height = 5
+)
+```
+
+---
+
+# Overview
+
+This notebook introduces the core methods of **survival analysis** (time-to-event analysis) using real medical datasets from the `survival` package. Topics covered:
+
+| Section | Method | Dataset | Clinical context |
+|---|---|---|---|
+| 2 | Survival objects & censoring | `lung` | Lung cancer mortality |
+| 3 | Kaplan-Meier estimation | `lung` | Survival by sex |
+| 4 | Log-rank test | `pbc` | Liver disease RCT |
+| 5 | Cox proportional hazards | `lung` | Multivariable adjustment |
+| 6 | PH assumption diagnostics | `lung` | Schoenfeld residuals |
+
+
+---
+
+# Setup & Packages
+
+```{r packages}
+if (!requireNamespace("survival",  quietly = TRUE)) install.packages("survival")
+if (!requireNamespace("survminer", quietly = TRUE)) install.packages("survminer")
+if (!requireNamespace("ggplot2",   quietly = TRUE)) install.packages("ggplot2")
+if (!requireNamespace("dplyr",     quietly = TRUE)) install.packages("dplyr")
+if (!requireNamespace("knitr",     quietly = TRUE)) install.packages("knitr")
+if (!requireNamespace("broom",     quietly = TRUE)) install.packages("broom")
+if (!requireNamespace("gridExtra", quietly = TRUE)) install.packages("gridExtra")
+
+library(survival)   # Surv(), survfit(), coxph(), survreg(), cox.zph()
+library(survminer)  # ggsurvplot() — publication-ready KM plots
+library(ggplot2)    # additional visualizations
+library(dplyr)      # data manipulation
+library(knitr)      # kable() for formatted tables
+library(broom)      # tidy() for model outputs
+library(gridExtra)  # multi-panel plots
+
+theme_set(theme_minimal(base_size = 10))
+```
+
+---
+
+# Log-Rank Test
+
+## The `pbc` Dataset — Primary Biliary Cholangitis RCT
+
+The `pbc` dataset records a **double-blind randomised trial** of D-penicillamine vs. placebo in 418 patients with **primary biliary cholangitis** (formerly cirrhosis) at the Mayo Clinic (1974–1984). Status 2 = transplant-free death.
+
+```{r pbc-load}
+data(pbc, package = "survival")
+
+# Clean dataset — restrict to randomised patients (non-NA trt)
+pbc2 <- pbc |>
+  filter(!is.na(trt)) |>
+  mutate(
+    status2 = ifelse(status == 2, 1, 0),    # 1 = dead, 0 = censored/transplant
+    trt     = factor(trt, levels = c(1, 2),
+                     labels = c("D-penicillamine", "Placebo")),
+    stage   = factor(stage),
+    sex     = factor(sex, levels = c("m", "f"),
+                     labels = c("Male", "Female")),
+    bili_cat = cut(bili, breaks = c(0, 1, 3, 10, Inf),
+                   labels = c("≤1", "1–3", "3–10", ">10"),
+                   right = TRUE)
+  )
+
+cat("Randomised patients:", nrow(pbc2), "\n")
+cat("Events (deaths):    ", sum(pbc2$status2), "\n")
+cat("Censored:           ", sum(pbc2$status2 == 0), "\n")
+```
+
+## KM Curves by Treatment
+
+```{r pbc-km}
+km_pbc <- survfit(Surv(time, status2) ~ trt, data = pbc2)
+
+ggsurvplot(
+  km_pbc,
+  data             = pbc2,
+  conf.int         = TRUE,
+  risk.table       = TRUE,
+  risk.table.height = 0.25,
+  pval             = TRUE,
+  pval.method      = TRUE,
+  xlab             = "Time (days)",
+  ylab             = "Transplant-free survival probability",
+  title            = "Survival by Treatment — PBC Trial (Mayo Clinic)",
+  legend.labs      = c("D-penicillamine", "Placebo"),
+  palette          = c("#d7301f", "#2c7fb8"),
+  ggtheme          = theme_minimal(base_size = 12),
+  surv.median.line  = "hv",
+  tables.theme      = theme_cleantable(),
+  fontsize          = 3,
+  font.title        = c(11, "bold"),
+  font.subtitle     = c(9, "plain"),
+  font.x            = c(9, "plain"),
+  font.y            = c(9, "plain"),
+  font.tickslab     = c(7, "plain"),
+  font.legend       = c(8, "plain"),
+  pval.size         = 3.5,
+  pval.coord        = c(10, 0.15)
+)
+```
+
+## Formal Log-Rank Test
+
+```{r logrank-pbc}
+lr_pbc <- survdiff(Surv(time, status2) ~ trt, data = pbc2)
+print(lr_pbc)
+
+# Extract key values
+chi2 <- lr_pbc$chisq
+df   <- length(lr_pbc$n) - 1
+pval <- pchisq(chi2, df = df, lower.tail = FALSE)
+
+cat(sprintf("\nLog-rank test: χ²(%d) = %.3f,  p = %.4f\n", df, chi2, pval))
+cat(sprintf("Interpretation: %s\n",
+    ifelse(pval < 0.05,
+           "Reject H0 — the two survival curves differ significantly.",
+           "Fail to reject H0 — no significant difference between curves.")))
+```
+Log-rank test: χ²(1) = 0.102,  p = 0.7498
+Interpretation: Fail to reject H0 — no significant difference between curves.
+
+
+## Log-Rank by Bilirubin Category
+
+```{r logrank-bili}
+km_bili <- survfit(Surv(time, status2) ~ bili_cat, data = pbc2)
+lr_bili <- survdiff(Surv(time, status2) ~ bili_cat, data = pbc2)
+
+cat(sprintf("Log-rank (bilirubin categories): χ²(%d) = %.3f,  p < 0.001\n",
+            length(lr_bili$n) - 1, lr_bili$chisq))
+
+ggsurvplot(
+  km_bili,
+  data             = pbc2,
+  conf.int         = FALSE,
+  risk.table       = TRUE,
+  risk.table.height = 0.28,
+  pval             = TRUE,
+  xlab             = "Time (days)",
+  ylab             = "Survival probability",
+  title            = "Survival by Serum Bilirubin Level (PBC)",
+  subtitle         = "Higher bilirubin strongly predicts worse survival",
+  legend.labs      = c("≤1 mg/dL","1–3 mg/dL","3–10 mg/dL",">10 mg/dL"),
+  palette          = c("#41ab5d","#2c7fb8","#fd8d3c","#d7301f"),
+  ggtheme          = theme_minimal(base_size = 12),
+  tables.theme      = theme_cleantable(),
+  fontsize          = 3,
+  font.title        = c(11, "bold"),
+  font.subtitle     = c(9, "plain"),
+  font.x            = c(9, "plain"),
+  font.y            = c(9, "plain"),
+  font.tickslab     = c(7, "plain"),
+  font.legend       = c(8, "plain"),
+  pval.size         = 3.5,
+  pval.coord        = c(10, 0.15)
+)
+```
+
+---
+
+# Cox Proportional Hazards Model
+
+
+## Multivariable Cox Model
+
+```{r cox-multi}
+cox_multi <- coxph(
+  Surv(time, status2) ~ trt + sex + age + bili+ albumin + stage,
+  data = pbc2
+)
+summary(cox_multi)
+```
+
+```{r cox-hr-table}
+# Clean HR table with CIs
+cox_tidy <- tidy(cox_multi, exponentiate = TRUE, conf.int = TRUE)
+
+cox_tidy
+```
+
+```{r cox-forest}
+# Forest plot
+cox_plot_df <- cox_tidy |>
+  mutate(
+    term = dplyr::recode(term,
+      "sexFemale"  = "Sex: Female vs. Male",
+      "age"        = "Age (per year)",
+      "ph.ecog"    = "ECOG score (per unit)",
+      "ph.karno"   = "Karnofsky score: physician (per unit)",
+      "wt.loss"    = "Weight loss (per lb)"
+    )
+  )
+
+ggplot(cox_plot_df, aes(x = estimate, y = reorder(term, estimate))) +
+  geom_vline(xintercept = 1, linetype = "dashed",
+             color = "gray50", linewidth = 0.8) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high),
+                 height = 0.25, color = "#2c7fb8", linewidth = 0.9) +
+  geom_point(aes(color = p.value < 0.05), size = 3.5) +
+  scale_color_manual(
+    values = c("TRUE" = "#d7301f", "FALSE" = "#2c7fb8"),
+    labels = c("TRUE" = "p < 0.05", "FALSE" = "p ≥ 0.05"),
+    name = NULL
+  ) +
+  scale_x_log10(breaks = c(0.3, 0.5, 1.0, 1.5, 2.0, 3.0)) +
+  labs(
+    title    = "Hazard Ratios: Multivariable Cox Model (lung dataset)",
+    subtitle = "HR < 1 = protective; HR > 1 = increased hazard. Error bars = 95% CI",
+    x = "Hazard Ratio (log scale)", y = NULL
+  ) +
+  theme(legend.position = "top")
+```
+#Interpretation & Documentation
+
+
+---
+
+# Proportional Hazards Assumption: Testing & Diagnostics
+
+## Why This Matters
+
+The Cox model assumes that hazard ratios are **constant over time**. If a treatment is beneficial early but harmful late (or vice versa), the PH assumption is violated and a single HR is misleading.
+
+## Method 1 — Log-Log Plot
+
+```{r ph-loglog}
+# Plot ln(-ln(S(t))) vs ln(t) — parallel lines = PH holds
+km_sex_plot <- survfit(Surv(time, status2) ~ sex, data = pbc2)
+
+# Extract strata sizes safely
+strata_sizes <- km_sex_plot$strata  # named integer vector, e.g. sex=Male: 113, sex=Female: 54
+
+# Check what labels actually exist before plotting
+ll_df <- data.frame(
+  time = km_sex_plot$time,
+  surv = km_sex_plot$surv,
+  sex  = rep(names(strata_sizes), times = strata_sizes)  # ✅ no diff() needed
+) |>
+  filter(surv > 0 & surv < 1) |>
+  mutate(
+    log_time         = log(time),
+    log_neg_log_surv = log(-log(surv))
+  )
+
+ggplot(ll_df, aes(x = log_time, y = log_neg_log_surv, color = sex)) +
+  geom_step(linewidth = 1) +
+  scale_color_manual(values = c("sex=Male" = "#d7301f", "sex=Female" = "#2c7fb8")) +
+  labs(
+    title    = "Log-Log Plot: Testing Proportional Hazards Assumption",
+    subtitle = "Parallel lines = PH holds | Crossing/diverging lines = PH violated",
+    x        = "log(Time)", y = "log(−log(Ŝ(t)))", color = "Sex"
+  ) +
+  theme_minimal(base_size = 8) +
+  theme(legend.position = "top")
+```
+
+
+
+## Method 2 — Schoenfeld Residuals
+
+```{r ph-schoenfeld}
+# cox.zph() tests PH via Schoenfeld residuals
+cox_ph_test <- cox.zph(cox_multi)
+
+cat("Schoenfeld Residuals Test for Proportional Hazards:\n")
+print(cox_ph_test)
+
+cat("\nInterpretation:\n")
+cat("  A significant p-value (< 0.05) for a predictor indicates\n")
+cat("  that its effect is NOT constant over time → PH violated.\n")
+```
+Violated for ph.karno only,  p= 0.010. 
+
+```{r ph-schoenfeld-plots}
+# Plot Schoenfeld residuals for significant predictors
+par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+
+plot(cox_ph_test[3],
+     col  = "#2c7fb8", lwd = 1,
+     xlab = "Time", ylab = "Beta(t) for bili")
+abline(h = coef(cox_multi)["bili"],
+       lty = 1, col = "gray40")
+
+plot(cox_ph_test[5],
+     col  = "#2c7fb8", lwd = 1,
+     xlab = "Time", ylab = "stage")
+abline(h = coef(cox_multi)["stage"],
+       lty = 1, col = "gray40")
+
+par(mfrow = c(1, 1))
+```
+
+
+## Method 3 — Observed vs. Predicted Survival
+
+```{r ph-observed-predicted}
+# Compare KM (observed) with Cox-predicted survival
+cox_base <- survfit(cox_multi)
+
+km_obs <- survfit(Surv(time, status2) ~ 1, data = pbc2)
+
+# Build comparison dataframe
+obs_df  <- data.frame(time = km_obs$time,
+                      surv = km_obs$surv,
+                      type = "Observed (KM)")
+pred_df <- data.frame(time = cox_base$time,
+                      surv = cox_base$surv,
+                      type = "Predicted (Cox)")
+
+ggplot(rbind(obs_df, pred_df), aes(x = time, y = surv, color = type)) +
+  geom_step(linewidth = 1) +
+  scale_color_manual(
+    values = c("Observed (KM)" = "#2c7fb8",
+               "Predicted (Cox)" = "#d7301f")
+  ) +
+  labs(
+    title    = "Observed (KM) vs. Predicted (Cox) Survival",
+    subtitle = "Close agreement indicates adequate model fit",
+    x = "Time (days)", y = "Survival probability", color = NULL
+  ) +
+  theme(legend.position = "top")
+```
+
+
+
+```{r cox-influential}
+# Influential observations via dfbeta
+dfbeta_res <- residuals(cox_complete, type = "dfbeta")
+
+dfbeta_df <- data.frame(
+  id    = seq_len(nrow(lung2_complete)),
+  sex   = dfbeta_res[, 1],
+  age   = dfbeta_res[, 2],
+  ecog  = dfbeta_res[, 3]
+)
+
+ggplot(dfbeta_df, aes(x = id, y = sex)) +
+  geom_col(fill = "#2c7fb8", alpha = 0.7) +
+  geom_hline(yintercept = c(-0.05, 0.05),
+             linetype = "dashed", color = "#d7301f") +
+  labs(
+    title    = "dfbeta Residuals for Sex Coefficient",
+    subtitle = "Large |dfbeta| → influential observation for that coefficient",
+    x = "Patient index", y = "dfbeta (sex)"
+  )
+```
+
+---
+
+
+## Key Decisions Flowchart
+
+```{r decision-flow}
+cat("
+  START
+    │
+    ▼
+  Is the outcome time-to-event with censoring?
+    └─ Yes → Survival analysis is appropriate
+    └─ No  → Consider logistic (binary) or Poisson (count)
+    │
+    ▼
+  STEP 1: Always plot the Kaplan-Meier curve first
+    └─ Use ggsurvplot() with risk table
+    │
+    ▼
+  STEP 2: Comparing 2+ groups?
+    └─ Log-rank test (survdiff())
+    └─ Report χ², p-value, and KM curves together
+    │
+    ▼
+  STEP 3: Need to adjust for confounders?
+    └─ Cox proportional hazards model (coxph())
+    └─ Report HRs with 95% CI
+    │
+    ▼
+  STEP 4: Always test the PH assumption
+    └─ cox.zph() — Schoenfeld residuals
+    └─ Log-log plot
+    └─ If violated → stratify, time-varying coefficients,
+                     or parametric model
+    │
+    ▼
+  STEP 5: Multiple event types?
+    └─ Use competing risks framework
+    └─ Do NOT treat competing events as censored
+    │
+    ▼
+  REPORT: KM plot + risk table | HRs with CI | PH test result
+          Median survival with 95% CI | Concordance (C-statistic)
+")
+```
+
+---
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```
